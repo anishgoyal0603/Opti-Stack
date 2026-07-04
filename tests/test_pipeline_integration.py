@@ -50,6 +50,58 @@ def test_pipeline_does_not_crash_when_all_attempts_security_rejected(monkeypatch
     assert len(result["steps"]) == 2 + orchestrator.MAX_OPTIMIZATION_ATTEMPTS
 
 
+class _OptimizerUsesUndefinedScale:
+    """Mocked client where the Optimizer's code correctly follows the
+    SCALE_AWARE_OPTIMIZER_SUFFIX instruction and reads a top-level SCALE
+    variable. Regression test for a real bug: SCALE was previously only
+    ever injected during the later scale-sweep step, so this exact code
+    crashed with NameError('SCALE') the moment it ran during the main
+    verification benchmark."""
+
+    def call(self, role_prompt, content, on_status=None):
+        if "refactoring" in role_prompt.lower():
+            return (
+                "```python\nSCALE = 1000\n"
+                "def process_data(limit):\n"
+                "    return sum(1 for x in range(limit) if 0 <= (limit-1-x) < limit)\n"
+                "print(f'Matches calculated: {process_data(SCALE)}')\n```"
+            )
+        if "performance engineering" in role_prompt.lower():
+            return "Nested loop is O(n^2)."
+        return (
+            "```python\n"
+            "def process_data(limit):\n"
+            "    return sum(1 for x in range(limit) if 0 <= (limit-1-x) < limit)\n"
+            "print(f'Matches calculated: {process_data(SCALE)}')\n```"
+        )
+
+
+def test_pipeline_handles_optimizer_code_that_reads_scale(monkeypatch):
+    """Regression test: previously raised NameError('SCALE') because
+    SCALE-aware optimizer output was written to sandbox/optimized.py and
+    benchmarked directly with no SCALE ever defined. Fixed by injecting a
+    fixed SCALE value (derived from the Normalizer's output) into both the
+    original and every optimizer attempt before they're benchmarked."""
+    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _OptimizerUsesUndefinedScale())
+
+    original_script = (
+        "def process_data(limit):\n"
+        "    data_list = list(range(limit))\n"
+        "    matches = 0\n"
+        "    for x in data_list:\n"
+        "        for y in data_list:\n"
+        "            if x + y == limit - 1:\n"
+        "                matches += 1\n"
+        "    return matches\n"
+        "print(f'Matches calculated: {process_data(1500)}')\n"
+    )
+    result = orchestrator.execute_pipeline(original_script)
+
+    assert result["verified"] is True
+    assert result["steps"][-1]["verification"]["passed"] is True
+    assert "NameError" not in (result["steps"][-1]["verification"].get("reason") or "")
+
+
 def test_pipeline_gives_up_gracefully_after_max_attempts(monkeypatch):
     monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _AlwaysWrongClient())
 

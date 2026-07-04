@@ -32,6 +32,7 @@ from .prompts import ANALYST_ROLE, NORMALIZER_ROLE, OPTIMIZER_ROLE, OPTIMIZER_RE
 from .benchmarking import run_benchmark, run_scale_sweep, _REPO_ROOT
 from .verification import verify_equivalence
 from .security_scanner import scan_code
+from .synthetic_data import extract_scale_value, inject_scale
 
 # Load .env from the repo root (one directory up from this package) so
 # GEMINI_API_KEY is available as soon as this module is imported --
@@ -77,9 +78,6 @@ def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
     original_path = os.path.join(sandbox_dir, "original.py")
     optimized_path = os.path.join(sandbox_dir, "optimized.py")
 
-    with open(original_path, "w") as f:
-        f.write(raw_user_script)
-
     status("[Analyst] Diagnosing bottlenecks...")
     analyst_output = client.call(ANALYST_ROLE, f"Target Script:\n{raw_user_script}", on_status=status)
     trace["steps"].append({"agent": "analyst", "output": analyst_output})
@@ -94,6 +92,20 @@ def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
         normalized_original = raw_user_script
 
     trace["steps"].append({"agent": "normalizer", "output": normalizer_output, "code": normalized_original})
+
+    # Both the original and every optimizer attempt may reference a SCALE
+    # variable (the Optimizer is explicitly instructed to). SCALE is only
+    # ever actually defined during the later scale-sweep step -- so without
+    # injecting a fixed value here too, code that follows that instruction
+    # crashes with NameError the moment it's run standalone during the
+    # main verification benchmark. Fix: pick one fixed SCALE value now
+    # (from what the Normalizer chose) and inject it into both scripts
+    # for this verification run, so they're each runnable on their own.
+    scale_value = extract_scale_value(normalized_original)
+    original_runnable = inject_scale(normalized_original, scale_value)
+
+    with open(original_path, "w") as f:
+        f.write(original_runnable)
 
     status("[Benchmarker] Profiling original script...")
     original_result = run_benchmark(original_path)
@@ -132,7 +144,7 @@ def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
             continue
 
         with open(optimized_path, "w") as f:
-            f.write(optimized_code)
+            f.write(inject_scale(optimized_code, scale_value))
 
         status("[Benchmarker] Profiling optimized script...")
         optimized_result = run_benchmark(optimized_path)

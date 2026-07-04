@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from typing import List
 
 
-DEFAULT_SCALES = [100, 2_000]
+DEFAULT_SCALES = [100, 1_000, 5_000]
 
 
 @dataclass
@@ -44,6 +44,18 @@ def inject_scale(script: str, scale: int) -> str:
     # definitions confusing readers of the generated sandbox file.
     cleaned = re.sub(r"^SCALE\s*=\s*\d+\s*$", "", script, flags=re.MULTILINE)
     return injected + cleaned
+
+
+def extract_scale_value(script: str, default: int = 1000) -> int:
+    """Pulls the integer value out of a top-level 'SCALE = <int>' line,
+    e.g. from the Normalizer's output, so that value can be re-injected
+    into the Optimizer's code for the main verification run. Without
+    this, code that follows SCALE_AWARE_OPTIMIZER_SUFFIX's instructions
+    (reading a SCALE variable) would raise NameError the moment it's
+    executed on its own -- SCALE was never actually defined anywhere
+    outside the scale-sweep step, which runs later in the pipeline."""
+    match = re.search(r"^SCALE\s*=\s*(\d+)\s*$", script, flags=re.MULTILINE)
+    return int(match.group(1)) if match else default
 
 
 def build_scaled_variants(script: str, scales: List[int] = None) -> List[ScaledVariant]:
