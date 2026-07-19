@@ -50,7 +50,7 @@ def test_orchestrator_rejects_dangerous_input_before_any_agent_call():
     """Proves the scanner is actually wired into execute_pipeline's entry
     point, not just sitting unused as a standalone module -- this directly
     addresses the bug report that flagged a missing security check."""
-    from orchestrator import execute_pipeline
+    from opti_stack.orchestrator import execute_pipeline
 
     dangerous_script = "import os\nos.system('echo pwned')"
     result = execute_pipeline(dangerous_script)
