@@ -34,3 +34,12 @@ while True:
 CRASHING_SCRIPT = """
 raise ValueError("deliberate failure for testing")
 """
+
+MEMORY_HEAVY_SCRIPT = """
+data = [0] * 5_000_000
+print(sum(data))
+"""
+
+MEMORY_LIGHT_SCRIPT = """
+print(0)
+"""
