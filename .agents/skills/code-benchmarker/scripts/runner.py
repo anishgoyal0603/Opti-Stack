@@ -1,3 +1,6 @@
+import statistics
+
+DEFAULT_RUNS = 5
 """
 Benchmark runner for the code-benchmarker skill.
 
@@ -36,6 +39,17 @@ BOOTSTRAP = (
 ) % SENTINEL
 
 
+def _measure_startup_baseline_ms(runs: int = 3) -> float:
+    """Cost of booting the interpreter with no user code, so it can be
+    subtracted from the target's wall-clock time."""
+    samples = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        subprocess.run([sys.executable, "-c", "pass"],
+                       capture_output=True, timeout=TIMEOUT_SECONDS)
+        samples.append((time.perf_counter() - start) * 1000)
+    return statistics.median(samples)
+    
 def _split_peak(stderr: str):
     """Pull the sentinel line back out of stderr and return
     (clean_stderr, peak_kb). stderr is surfaced to the user on failure, so the
