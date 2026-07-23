@@ -27,6 +27,8 @@ class AgentResult:
     peak_memory_kb: Optional[float] = None
     stdout: Optional[str] = None
     stderr: Optional[str] = None
+    runs: Optional[int] = None          # how many timed runs were taken
+    baseline_ms: Optional[float] = None # interpreter startup cost, already subtracted
 
 
 def run_benchmark(script_path: str) -> AgentResult:
@@ -37,7 +39,7 @@ def run_benchmark(script_path: str) -> AgentResult:
             [sys.executable, RUNNER_PATH, script_path],
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=90,
         )
         data = json.loads(proc.stdout.strip())
         return AgentResult(**data)
