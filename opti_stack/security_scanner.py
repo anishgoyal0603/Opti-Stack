@@ -27,12 +27,25 @@ from typing import List
 
 
 DENYLISTED_IMPORTS = {
-    "os", "subprocess", "shutil", "socket", "sys",
-    "ctypes", "pty", "pickle", "marshal", "multiprocessing",
+    # process / system
+    "os", "subprocess", "shutil", "sys", "ctypes", "pty", "signal",
+    "multiprocessing", "threading", "resource", "runpy", "code",
+    # serialisation that can execute code on load
+    "pickle", "marshal", "shelve", "dill",
+    # network
+    "socket", "ssl", "urllib", "urllib2", "http", "ftplib", "smtplib",
+    "telnetlib", "requests", "httpx", "aiohttp", "asyncio",
+    # filesystem
+    "pathlib", "tempfile", "glob", "fileinput", "io", "zipfile", "tarfile",
+    # dynamic import / introspection escapes
+    "importlib", "builtins", "__builtin__", "imp", "inspect", "gc", "ast",
+    "webbrowser", "platform", "site", "sysconfig",
 }
 
 DENYLISTED_CALLS = {
-    "eval", "exec", "compile", "__import__", "open",
+    "eval", "exec", "compile", "__import__", "open", "input",
+    "breakpoint", "getattr", "setattr", "delattr",
+    "globals", "locals", "vars", "memoryview",
 }
 
 # os.system, os.remove, etc. -- checked via attribute access on names
