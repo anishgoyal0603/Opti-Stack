@@ -136,3 +136,10 @@ pytest tests/ -v
 - Sandbox isolation is process-level (subprocess + timeout), not a full
   container/VM sandbox — sufficient for a hackathon demo, not for
   untrusted production multi-tenant use without further hardening.
+- The security gate is a **denylist over an AST scan, not a sandbox**. It blocks
+  process, filesystem, network and dynamic-import escapes by name, and is
+  verified against a suite of known bypass payloads. It does not defeat a
+  determined adversary — obfuscated bytecode tricks and unicode homoglyph
+  attacks are out of scope. It is one layer; the subprocess timeout and the
+  per-run temp directory are the others. Do not expose this to untrusted
+  multi-tenant traffic without a container or gVisor boundary.
