@@ -1,3 +1,4 @@
+
 """
 Opti-Stack orchestrator.
 
@@ -23,13 +24,15 @@ each step does internally".
 
 import os
 import re
+import tempfile
+import shutil
 import dataclasses
 
 from dotenv import load_dotenv
 
 from .llm_client import GeminiClient
 from .prompts import ANALYST_ROLE, NORMALIZER_ROLE, OPTIMIZER_ROLE, OPTIMIZER_RETRY_ROLE
-from .benchmarking import run_benchmark, run_scale_sweep, _REPO_ROOT
+from .benchmarking import run_benchmark, run_scale_sweep
 from .verification import verify_equivalence
 from .security_scanner import scan_code
 from .synthetic_data import extract_scale_value, inject_scale
@@ -47,7 +50,18 @@ def extract_code(text: str) -> str:
     return match.group(1).strip() if match else text.strip()
 
 
-def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
+def execute_pipeline(raw_user_script: str, on_status=None, client=None) -> dict:
+    """Public entry point. Each invocation gets its own temp directory so
+    concurrent runs (e.g. two Streamlit users) can never read or overwrite
+    each other's generated scripts."""
+    run_dir = tempfile.mkdtemp(prefix="optistack_run_")
+    try:
+        return _execute_pipeline_in(run_dir, raw_user_script, on_status, client)
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, client=None) -> dict:
     """Coordinator entry point. Returns a structured dict containing every
     intermediate artifact, so both the CLI and the Streamlit UI can render
     the full agent trace (this also gives you the 'observability' course
@@ -71,12 +85,11 @@ def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
         trace["scale_sweep"] = []
         return trace
 
-    client = GeminiClient()
-    sandbox_dir = os.path.join(_REPO_ROOT, "sandbox")
-    os.makedirs(sandbox_dir, exist_ok=True)
+    if client is None:
+        client = GeminiClient()
 
-    original_path = os.path.join(sandbox_dir, "original.py")
-    optimized_path = os.path.join(sandbox_dir, "optimized.py")
+    original_path = os.path.join(run_dir, "original.py")
+    optimized_path = os.path.join(run_dir, "optimized.py")
 
     status("[Analyst] Diagnosing bottlenecks...")
     analyst_output = client.call(ANALYST_ROLE, f"Target Script:\n{raw_user_script}", on_status=status)
@@ -190,7 +203,7 @@ def execute_pipeline(raw_user_script: str, on_status=None) -> dict:
         return trace
 
     status("[Stress-Tester] Running scale sweep across synthetic input sizes...")
-    trace["scale_sweep"] = run_scale_sweep(normalized_original, optimized_code, sandbox_dir, status)
+    trace["scale_sweep"] = run_scale_sweep(normalized_original, optimized_code, run_dir, status)
 
     return trace
 
