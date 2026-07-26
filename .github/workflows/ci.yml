@@ -30,3 +30,16 @@ jobs:
 
       - name: Run test suite
         run: pytest -q
+
+  unit-tests-no-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install test deps only (no google-genai)
+        run: pip install pytest
+      - name: Run dependency-free unit tests
+        run: pytest tests/test_security_scanner.py tests/test_synthetic_data.py -q
