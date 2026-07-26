@@ -34,14 +34,14 @@ class _AlwaysDangerousClient:
         return "```python\nimport os\nos.system('echo pwned')\n```"
 
 
-def test_pipeline_does_not_crash_when_all_attempts_security_rejected(monkeypatch):
+def test_pipeline_does_not_crash_when_all_attempts_security_rejected():
     """Regression test: previously raised KeyError('benchmark') because
     trace["steps"][-1]["benchmark"] assumed the last step always has a
     benchmark, which is false when every attempt was security-rejected
     before execution. Fixed via trace["steps"][-1].get("benchmark", {})."""
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _AlwaysDangerousClient())
-
-    result = orchestrator.execute_pipeline("print('original')")
+    result = orchestrator.execute_pipeline(
+        "print('original')", client=_AlwaysDangerousClient()
+    )
 
     assert result["verified"] is False
     assert result["all_attempts_security_rejected"] is True
@@ -76,14 +76,12 @@ class _OptimizerUsesUndefinedScale:
         )
 
 
-def test_pipeline_handles_optimizer_code_that_reads_scale(monkeypatch):
+def test_pipeline_handles_optimizer_code_that_reads_scale():
     """Regression test: previously raised NameError('SCALE') because
     SCALE-aware optimizer output was written to sandbox/optimized.py and
     benchmarked directly with no SCALE ever defined. Fixed by injecting a
     fixed SCALE value (derived from the Normalizer's output) into both the
     original and every optimizer attempt before they're benchmarked."""
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _OptimizerUsesUndefinedScale())
-
     original_script = (
         "def process_data(limit):\n"
         "    data_list = list(range(limit))\n"
@@ -95,17 +93,19 @@ def test_pipeline_handles_optimizer_code_that_reads_scale(monkeypatch):
         "    return matches\n"
         "print(f'Matches calculated: {process_data(1500)}')\n"
     )
-    result = orchestrator.execute_pipeline(original_script)
+    result = orchestrator.execute_pipeline(
+        original_script, client=_OptimizerUsesUndefinedScale()
+    )
 
     assert result["verified"] is True
     assert result["steps"][-1]["verification"]["passed"] is True
     assert "NameError" not in (result["steps"][-1]["verification"].get("reason") or "")
 
 
-def test_pipeline_gives_up_gracefully_after_max_attempts(monkeypatch):
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _AlwaysWrongClient())
-
-    result = orchestrator.execute_pipeline("print('original')")
+def test_pipeline_gives_up_gracefully_after_max_attempts():
+    result = orchestrator.execute_pipeline(
+        "print('original')", client=_AlwaysWrongClient()
+    )
 
     assert result["verified"] is False
     assert result.get("rejected_at_input") is not True
@@ -116,13 +116,13 @@ def test_pipeline_gives_up_gracefully_after_max_attempts(monkeypatch):
     assert result["scale_sweep"] == []
 
 
-def test_pipeline_rejects_dangerous_input_with_empty_steps(monkeypatch):
+def test_pipeline_rejects_dangerous_input_with_empty_steps():
     """Companion to the cli.py crash fix: confirms steps is an empty list
     (not missing) on the rejected_at_input path, which is exactly the
     shape app/cli.py and app_ui.py must handle without an IndexError."""
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _AlwaysWrongClient())
-
-    result = orchestrator.execute_pipeline("import os\nos.system('echo hi')")
+    result = orchestrator.execute_pipeline(
+        "import os\nos.system('echo hi')", client=_AlwaysWrongClient()
+    )
 
     assert result["rejected_at_input"] is True
     assert result["steps"] == []
