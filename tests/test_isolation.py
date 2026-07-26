@@ -22,47 +22,51 @@ class _EchoClient:
         return f"```python\nprint('{self.marker}')\n```"
 
 
-def test_each_run_uses_a_distinct_temp_directory(monkeypatch):
+def test_each_run_uses_a_distinct_temp_directory():
     seen = []
     real = orchestrator._execute_pipeline_in
 
-    def spy(run_dir, script, on_status=None):
+    def spy(run_dir, script, on_status=None, client=None):
         seen.append(run_dir)
-        return real(run_dir, script, on_status)
+        return real(run_dir, script, on_status, client)
 
-    monkeypatch.setattr(orchestrator, "_execute_pipeline_in", spy)
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _EchoClient("A"))
-
-    orchestrator.execute_pipeline("print('A')")
-    orchestrator.execute_pipeline("print('A')")
+    orchestrator._execute_pipeline_in = spy
+    try:
+        orchestrator.execute_pipeline("print('A')", client=_EchoClient("A"))
+        orchestrator.execute_pipeline("print('A')", client=_EchoClient("A"))
+    finally:
+        orchestrator._execute_pipeline_in = real
 
     assert len(seen) == 2
     assert seen[0] != seen[1]
 
 
-def test_run_directory_is_cleaned_up(monkeypatch):
+def test_run_directory_is_cleaned_up():
     captured = {}
     real = orchestrator._execute_pipeline_in
 
-    def spy(run_dir, script, on_status=None):
+    def spy(run_dir, script, on_status=None, client=None):
         captured["dir"] = run_dir
-        return real(run_dir, script, on_status)
+        return real(run_dir, script, on_status, client)
 
-    monkeypatch.setattr(orchestrator, "_execute_pipeline_in", spy)
-    monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _EchoClient("A"))
+    orchestrator._execute_pipeline_in = spy
+    try:
+        orchestrator.execute_pipeline("print('A')", client=_EchoClient("A"))
+    finally:
+        orchestrator._execute_pipeline_in = real
 
-    orchestrator.execute_pipeline("print('A')")
     assert not os.path.exists(captured["dir"])
 
 
-def test_concurrent_runs_do_not_contaminate_each_other(monkeypatch):
+def test_concurrent_runs_do_not_contaminate_each_other():
     """Two pipelines in flight simultaneously must each verify against their
     own script, not the other's."""
     results = {}
 
     def run(marker):
-        monkeypatch.setattr(orchestrator, "GeminiClient", lambda: _EchoClient(marker))
-        results[marker] = orchestrator.execute_pipeline(f"print('{marker}')")
+        results[marker] = orchestrator.execute_pipeline(
+            f"print('{marker}')", client=_EchoClient(marker)
+        )
 
     t1 = threading.Thread(target=run, args=("ALPHA",))
     t2 = threading.Thread(target=run, args=("BETA",))
