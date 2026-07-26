@@ -1,4 +1,3 @@
-
 """
 Opti-Stack orchestrator.
 
@@ -53,7 +52,9 @@ def extract_code(text: str) -> str:
 def execute_pipeline(raw_user_script: str, on_status=None, client=None) -> dict:
     """Public entry point. Each invocation gets its own temp directory so
     concurrent runs (e.g. two Streamlit users) can never read or overwrite
-    each other's generated scripts."""
+    each other's generated scripts. `client` is accepted here (used from
+    Day 7 onward) so tests can inject a fake LLM client instead of
+    monkeypatching the module global."""
     run_dir = tempfile.mkdtemp(prefix="optistack_run_")
     try:
         return _execute_pipeline_in(run_dir, raw_user_script, on_status, client)
