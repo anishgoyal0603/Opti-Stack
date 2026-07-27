@@ -1,6 +1,7 @@
 import os
 import sys
 import streamlit as st
+from opti_stack.llm_client import TerminalAPIError
 
 # ui/app.py lives in a sibling folder to opti_stack/, so add the repo root
 # to sys.path before importing it. Without this, `from opti_stack...` would
@@ -45,8 +46,15 @@ if st.button("Audit & Optimize Code", type="primary"):
             status_box.info("\n\n".join(status_log[-6:]))  # show last few lines
 
         with st.spinner("Running multi-agent pipeline..."):
-            try:
+           try:
                 result = execute_pipeline(user_code, on_status=on_status)
+            except TerminalAPIError as e:
+                st.error(
+                    "🔑 The Gemini API rejected the request outright (bad key, "
+                    "quota, or permissions). Retrying other models will not help.\n\n"
+                    f"Details: {e}"
+                )
+                st.stop()
             except Exception as e:
                 st.error(f"Pipeline failed: {e}")
                 st.stop()
