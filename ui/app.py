@@ -1,5 +1,6 @@
 import os
 import sys
+import json
 import streamlit as st
 from opti_stack.llm_client import TerminalAPIError
 
@@ -186,3 +187,10 @@ if st.button("Audit & Optimize Code", type="primary"):
                 "Normalizer agent's SCALE extraction didn't apply cleanly to this "
                 "particular script. The single-point benchmark above is still valid."
             )
+            st.divider()
+            st.download_button(
+               "Download full agent trace (JSON)",
+                data=json.dumps(result, indent=2, default=str),
+                file_name=f"optistack_trace_{result.get('run_id', 'run')}.json",
+                mime="application/json",
+                )

@@ -19,13 +19,20 @@ each step does internally".
     -> Verifier            : checks output equivalence, deterministically
     -> Coordinator decides : accept, or send back to Optimizer with the
                               verifier's failure reason (retry loop, bounded)
+
+Every completed run is also persisted to disk as a JSON trace (see
+_persist_trace below) -- this is what makes "observability" a concrete,
+inspectable artifact rather than just a word on a resume.
 """
 
 import os
 import re
+import json
+import uuid
 import tempfile
 import shutil
 import dataclasses
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 
@@ -36,12 +43,32 @@ from .verification import verify_equivalence
 from .security_scanner import scan_code
 from .synthetic_data import extract_scale_value, inject_scale
 
-# Load .env from the repo root (one directory up from this package) so
-# GEMINI_API_KEY is available as soon as this module is imported --
-# no need to manually export it in the shell every session.
 load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
 
 MAX_OPTIMIZATION_ATTEMPTS = 3
+
+TRACE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "traces"
+)
+
+
+def _persist_trace(trace: dict) -> dict:
+    """Writes a structured JSON trace per run to disk. This is what makes the
+    'observability' claim concrete: every agent input, output and verdict is
+    recoverable after the fact, not just rendered once in the UI. Never lets
+    a disk/write problem break the actual pipeline run -- telemetry failing
+    silently degrades to trace_path=None rather than crashing the request."""
+    trace["run_id"] = uuid.uuid4().hex[:12]
+    trace["completed_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        os.makedirs(TRACE_DIR, exist_ok=True)
+        path = os.path.join(TRACE_DIR, f"{trace['run_id']}.json")
+        with open(path, "w") as f:
+            json.dump(trace, f, indent=2, default=str)
+        trace["trace_path"] = path
+    except OSError:
+        trace["trace_path"] = None
+    return trace
 
 
 def extract_code(text: str) -> str:
@@ -52,9 +79,8 @@ def extract_code(text: str) -> str:
 def execute_pipeline(raw_user_script: str, on_status=None, client=None) -> dict:
     """Public entry point. Each invocation gets its own temp directory so
     concurrent runs (e.g. two Streamlit users) can never read or overwrite
-    each other's generated scripts. `client` is accepted here (used from
-    Day 7 onward) so tests can inject a fake LLM client instead of
-    monkeypatching the module global."""
+    each other's generated scripts. `client` is accepted here so tests can
+    inject a fake LLM client instead of monkeypatching the module global."""
     run_dir = tempfile.mkdtemp(prefix="optistack_run_")
     try:
         return _execute_pipeline_in(run_dir, raw_user_script, on_status, client)
@@ -84,7 +110,7 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
         trace["rejected_at_input"] = True
         trace["security_violations"] = user_scan.violations
         trace["scale_sweep"] = []
-        return trace
+        return _persist_trace(trace)
 
     if client is None:
         client = GeminiClient()
@@ -107,14 +133,6 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
 
     trace["steps"].append({"agent": "normalizer", "output": normalizer_output, "code": normalized_original})
 
-    # Both the original and every optimizer attempt may reference a SCALE
-    # variable (the Optimizer is explicitly instructed to). SCALE is only
-    # ever actually defined during the later scale-sweep step -- so without
-    # injecting a fixed value here too, code that follows that instruction
-    # crashes with NameError the moment it's run standalone during the
-    # main verification benchmark. Fix: pick one fixed SCALE value now
-    # (from what the Normalizer chose) and inject it into both scripts
-    # for this verification run, so they're each runnable on their own.
     scale_value = extract_scale_value(normalized_original)
     original_runnable = inject_scale(normalized_original, scale_value)
 
@@ -191,9 +209,6 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
     trace["final_optimized_code"] = optimized_code if verified else None
     trace["original_benchmark_summary"] = dataclasses.asdict(original_result)
     trace["optimized_benchmark_summary"] = trace["steps"][-1].get("benchmark", {})
-    # If every attempt was rejected by the security scanner (no attempt ever
-    # reached the verifier), surface that distinction explicitly so the UI
-    # can tell "logic was wrong" apart from "code was unsafe to even run".
     trace["all_attempts_security_rejected"] = bool(trace["steps"]) and all(
         not step.get("security_scan", {}).get("safe", True) for step in trace["steps"] if step["agent"] == "optimizer"
     )
@@ -201,12 +216,12 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
     if not verified:
         status("[Coordinator] Could not produce a verified-correct optimization within attempt budget.")
         trace["scale_sweep"] = []
-        return trace
+        return _persist_trace(trace)
 
     status("[Stress-Tester] Running scale sweep across synthetic input sizes...")
     trace["scale_sweep"] = run_scale_sweep(normalized_original, optimized_code, run_dir, status)
 
-    return trace
+    return _persist_trace(trace)
 
 
 if __name__ == "__main__":
