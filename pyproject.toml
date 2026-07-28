@@ -1,0 +1,6 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --cov=opti_stack --cov-report=term-missing --cov-fail-under=70"
+
+[tool.coverage.run]
+omit = ["ui/*", "tests/*"]
