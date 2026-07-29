@@ -2,7 +2,6 @@ import os
 import sys
 import json
 import streamlit as st
-from opti_stack.llm_client import TerminalAPIError
 
 # ui/app.py lives in a sibling folder to opti_stack/, so add the repo root
 # to sys.path before importing it. Without this, `from opti_stack...` would
@@ -12,6 +11,7 @@ from opti_stack.llm_client import TerminalAPIError
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opti_stack.orchestrator import execute_pipeline
+from opti_stack.llm_client import TerminalAPIError
 
 st.set_page_config(page_title="Opti-Stack: Autonomous Algorithmic Auditor", layout="wide")
 
@@ -47,7 +47,7 @@ if st.button("Audit & Optimize Code", type="primary"):
             status_box.info("\n\n".join(status_log[-6:]))  # show last few lines
 
         with st.spinner("Running multi-agent pipeline..."):
-           try:
+            try:
                 result = execute_pipeline(user_code, on_status=on_status)
             except TerminalAPIError as e:
                 st.error(
@@ -187,10 +187,11 @@ if st.button("Audit & Optimize Code", type="primary"):
                 "Normalizer agent's SCALE extraction didn't apply cleanly to this "
                 "particular script. The single-point benchmark above is still valid."
             )
-            st.divider()
-            st.download_button(
-               "Download full agent trace (JSON)",
-                data=json.dumps(result, indent=2, default=str),
-                file_name=f"optistack_trace_{result.get('run_id', 'run')}.json",
-                mime="application/json",
-                )
+
+        st.divider()
+        st.download_button(
+            "Download full agent trace (JSON)",
+            data=json.dumps(result, indent=2, default=str),
+            file_name=f"optistack_trace_{result.get('run_id', 'run')}.json",
+            mime="application/json",
+        )
