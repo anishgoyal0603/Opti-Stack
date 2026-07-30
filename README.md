@@ -132,7 +132,9 @@ opti-stack-project/
 ├── pyproject.toml                     # pytest + coverage config (70% floor)
 ├── requirements.txt
 ├── env.example                        # copy to .env and add your own Gemini API key
-└── .gitignore
+├── .gitignore
+├── LICENSE
+└── README.md                          # this file
 ```
 
 Each module in `opti_stack/` has exactly one job: `orchestrator.py` only
