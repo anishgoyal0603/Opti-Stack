@@ -3,6 +3,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 
+A multi-agent system that rewrites slow Python — then **proves the rewrite is
+correct before accepting it.**
+
+![Opti-Stack finding an O(N²) bottleneck and verifying the O(N) rewrite](docs/demo.gif)
+
+**[▶ Live demo](https://your-app.streamlit.app)** · [Design notes](docs/design.md)
+
 
 A multi-agent system that acts as an automated Senior Staff Engineer:
 feed it a slow or naive Python script, and it diagnoses the algorithmic
