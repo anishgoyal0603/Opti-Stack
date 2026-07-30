@@ -20,6 +20,30 @@ bottleneck, rewrites the code, **verifies the rewrite is behaviorally
 identical to the original**, and benchmarks both versions across multiple
 synthetic input scales.
 
+## Contents
+
+- [The problem this solves](#the-problem-this-solves)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Course concepts demonstrated](#course-concepts-demonstrated)
+- [Project structure](#project-structure)
+- [Setup](#setup-free--local)
+- [Run](#run)
+- [Test](#test)
+- [Known limitations](#known-limitations-stated-honestly-not-hidden)
+- [License](#license)
+
+## Features
+
+- **Multi-agent pipeline** — Analyst, Normalizer, Optimizer, and a deterministic Verifier, each with a single responsibility
+- **Correctness-first** — rejects a faster rewrite unless it produces byte-identical stdout to the original, with a bounded retry loop on failure
+- **Static security gate** — AST-based scan runs on both the user's input and every LLM-generated rewrite, before any code executes
+- **Scale-sweep benchmarking** — both versions are re-run across synthetic input sizes to show how complexity actually diverges, not just a single-point timing
+- **Structured observability** — every agent step, security verdict, and benchmark result is captured in a JSON trace, downloadable from the UI
+- **Fault-tolerant LLM calls** — exponential backoff on transient errors, a configurable model-fallback chain, and a distinct error path for unrecoverable auth failures
+
+**Tech stack:** Python 3.11+ · Google Gemini (`google-genai`) · Streamlit · pytest + pytest-cov · GitHub Actions
+
 ## The problem this solves
 
 Engineers regularly write or inherit correct-but-slow code under time
@@ -196,3 +220,7 @@ pytest tests/ -v
   attacks are out of scope. It is one layer; the subprocess timeout and the
   per-run temp directory are the others. Do not expose this to untrusted
   multi-tenant traffic without a container or gVisor boundary.
+
+## License
+
+This project is licensed under the MIT License — see [`LICENSE`](LICENSE) for the full text.
