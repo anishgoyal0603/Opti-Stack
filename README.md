@@ -6,10 +6,13 @@
 A multi-agent system that rewrites slow Python — then **proves the rewrite is
 correct before accepting it.**
 
-![Opti-Stack finding an O(N²) bottleneck and verifying the O(N) rewrite](docs/demo.gif)
+![Opti-Stack finding an O(N squared) bottleneck and verifying the O(N) rewrite](docs/demo.gif)
 
-**[▶ Live demo](https://your-app.streamlit.app)** · [Design notes](docs/design.md)
+[Design notes](docs/design.md)
 
+<!-- Once deployed (see Deployment section), add a live demo link here, e.g.:
+**[Live demo](https://opti-stack.streamlit.app)** · [Design notes](docs/design.md)
+Do not add this link until the app is actually deployed -- a dead link is worse than no link. -->
 
 A multi-agent system that acts as an automated Senior Staff Engineer:
 feed it a slow or naive Python script, and it diagnoses the algorithmic
@@ -30,34 +33,66 @@ proves the rewrite produces identical output to the original.**
 ## Architecture
 
 ```
-                 ┌─────────────┐
-   user script → │ Coordinator │
-                 └──────┬──────┘
-        ┌───────────────┼────────────────────────┬───────────────┐
-        ▼               ▼                        ▼               ▼
-   ┌─────────┐   ┌─────────────┐          ┌─────────────┐  ┌────────────┐
-   │ Analyst │   │ Normalizer  │          │  Optimizer  │  │  Verifier  │
-   │ (LLM)   │   │ (LLM)       │          │  (LLM)      │  │ (deter-    │
-   │diagnoses│   │extracts a   │          │ rewrites    │  │ ministic)  │
-   │bottleneck│  │SCALE var for│          │ code        │  │ checks     │
-   └─────────┘   │fair sweeps  │          └──────┬──────┘  │stdout match│
-                 └─────────────┘                 │          └─────┬──────┘
-                                                  ▼                │
-                                          ┌───────────────┐        │
-                                          │  Benchmarker   │◄──────┘
-                                          │  skill (sand-  │   loops back to
-                                          │  boxed subproc)│   Optimizer with
-                                          └────────────────┘   failure reason
-                                                                if verification
-                                                                fails (max 3x)
+  user script
+      │
+      ▼
+┌───────────────────────────┐
+│ Security Scanner          │   rejects unsafe input before any agent runs
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Analyst  (LLM)            │   diagnoses the algorithmic bottleneck
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Normalizer  (LLM)         │   extracts a SCALE variable for fair scale-sweeps
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Benchmarker skill         │   profiles the ORIGINAL script (sandboxed subprocess)
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Optimizer  (LLM)          │   rewrites the code -- up to 3 attempts, see note below
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Security Scanner          │   on the generated code this time
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Benchmarker skill         │   profiles the OPTIMIZED script
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Verifier  (deterministic) │   checks stdout match against the original
+└───────────────────────────┘
+              │
+              ▼
+┌───────────────────────────┐
+│ Stress-Tester             │   scale sweep across synthetic input sizes
+└───────────────────────────┘
 ```
 
-The **Coordinator** (`opti_stack/orchestrator.py`) doesn't run a fixed script — it
-branches: if the Verifier rejects an optimization attempt, the
-Coordinator routes the failure reason back to the Optimizer agent for a
-bounded number of retries before giving up and surfacing the failure
-honestly to the user, rather than presenting an unverified rewrite as a
-success.
+The diagram above shows the happy path top to bottom, but the
+**Coordinator** (`opti_stack/orchestrator.py`) doesn't run a fixed script — it
+branches: the four steps from Optimizer through Verifier form a bounded
+retry loop (up to 3 attempts). If the Verifier rejects an optimization
+attempt, the Coordinator routes the failure reason back to the Optimizer
+agent for another try, rather than presenting an unverified rewrite as a
+success; if all 3 attempts fail, the Coordinator gives up and surfaces
+the failure honestly to the user. Note that the Security Scanner runs
+twice per pipeline: once on the user's original input, and again on
+every piece of code the Optimizer generates -- a prompt-injected input
+could otherwise steer the Optimizer into producing unsafe code, so
+scanning only the input isn't enough.
 
 ## Course concepts demonstrated
 
@@ -74,12 +109,14 @@ success.
 
 ```
 opti-stack-project/
+├── .github/workflows/
+│   └── ci.yml                         # CI: pytest on 3.11/3.12, plus a no-SDK unit-test job
 ├── .agents/skills/code-benchmarker/   # the benchmarking skill
 │   ├── SKILL.md
 │   └── scripts/runner.py
 ├── opti_stack/                        # core package -- all business logic lives here
 │   ├── orchestrator.py                # coordination/branching logic only
-│   ├── llm_client.py                  # Gemini API wrapper + model fallback
+│   ├── llm_client.py                  # Gemini API wrapper + retry/model fallback
 │   ├── prompts.py                     # all agent role prompts
 │   ├── benchmarking.py                # subprocess benchmark runner + scale sweep
 │   ├── verification.py                # deterministic correctness checker
@@ -88,9 +125,14 @@ opti-stack-project/
 │   └── cli.py                         # CLI entry point
 ├── ui/
 │   └── app.py                         # Streamlit front-end
+├── docs/
+│   ├── demo.gif                       # scale-sweep demo, shown at the top of this README
+│   └── design.md                      # why the Verifier is deterministic, why the scanner runs twice, etc.
 ├── tests/                             # pytest suite
+├── pyproject.toml                     # pytest + coverage config (70% floor)
 ├── requirements.txt
-└── .env.example
+├── env.example                        # copy to .env and add your own Gemini API key
+└── .gitignore
 ```
 
 Each module in `opti_stack/` has exactly one job: `orchestrator.py` only
@@ -107,7 +149,7 @@ python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-cp .env.example .env               # then paste your free Gemini API key into .env
+cp env.example .env                # then paste your free Gemini API key into .env
 ```
 
 Get a free Gemini API key at [aistudio.google.com](https://aistudio.google.com) — the free tier is sufficient for demo purposes.
@@ -119,7 +161,7 @@ starts -- no need to manually export the variable into your shell.
 
 ```bash
 # Web UI (run from the repo root)
-streamlit run ui/app.py
+python3 -m streamlit run ui/app.py
 
 # CLI (also run from the repo root, as a module)
 python -m opti_stack.cli --inline "print('hello world')"
@@ -140,9 +182,11 @@ pytest tests/ -v
 - Verification compares stdout only. Scripts that don't print their
   result, or that have side effects beyond stdout (file writes, network
   calls), are not currently verified for those side effects.
-- Sandbox isolation is process-level (subprocess + timeout), not a full
-  container/VM sandbox — sufficient for a hackathon demo, not for
-  untrusted production multi-tenant use without further hardening.
+- Sandbox isolation is process-level (subprocess + timeout + a per-run
+  temporary directory, so concurrent runs cannot read or overwrite each
+  other's generated code), not a full container/VM sandbox — sufficient
+  for a hackathon demo, not for untrusted production multi-tenant use
+  without further hardening.
 - The security gate is a **denylist over an AST scan, not a sandbox**. It blocks
   process, filesystem, network and dynamic-import escapes by name, and is
   verified against a suite of known bypass payloads. It does not defeat a
