@@ -43,7 +43,7 @@ from .verification import verify_equivalence
 from .security_scanner import scan_code
 from .synthetic_data import extract_scale_value, inject_scale
 
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"))
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"), override=True)
 
 MAX_OPTIMIZATION_ATTEMPTS = 3
 
