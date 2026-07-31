@@ -35,9 +35,44 @@ user_code = st.text_area(
 print(f"Matches calculated: {process_data(1500)}")""",
 )
 
+with st.sidebar:
+    st.header("Configuration")
+    user_key = st.text_input(
+        "Gemini API key",
+        type="password",
+        help="Used only for this browser session and never stored. "
+             "Get a free one at aistudio.google.com/app/apikey",
+    )
+    st.caption(
+        "Opti-Stack runs your code in a sandboxed subprocess with a static "
+        "security scan and a 10-second timeout. Do not paste secrets you "
+        "wouldn't want to type into any web form."
+    )
+
+# Precedence: a key typed into the sidebar (a visitor using the deployed app)
+# beats st.secrets (the deployer's own fallback key, set in Streamlit Cloud's
+# Secrets panel) beats a plain environment variable (local development via
+# .env). This means a stranger using the public URL never touches your quota
+# unless they choose to leave the sidebar blank and you've left a fallback in.
+
+def _safe_secret(key, default=""):
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
+api_key = user_key or _safe_secret("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
+
+if api_key:
+    os.environ["GEMINI_API_KEY"] = api_key
+
+
 if st.button("Audit & Optimize Code", type="primary"):
-    if not os.environ.get("GEMINI_API_KEY"):
-        st.error("Please set the GEMINI_API_KEY environment variable before running.")
+    if not api_key:
+        st.error(
+            "Enter a Gemini API key in the sidebar before running "
+            "(or set GEMINI_API_KEY in your local .env for development)."
+        )
     else:
         status_box = st.empty()
         status_log = []
