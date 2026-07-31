@@ -8,11 +8,11 @@ correct before accepting it.**
 
 ![Opti-Stack finding an O(N squared) bottleneck and verifying the O(N) rewrite](docs/demo.gif)
 
-[Design notes](docs/design.md)
+**[▶ Live demo](https://opti-stack.streamlit.app)** · [Design notes](docs/design.md)
 
-<!-- Once deployed (see Deployment section), add a live demo link here, e.g.:
-**[Live demo](https://opti-stack.streamlit.app)** · [Design notes](docs/design.md)
-Do not add this link until the app is actually deployed -- a dead link is worse than no link. -->
+> The hosted demo sleeps after a period of inactivity — the first load may take
+> ~30 seconds to wake. Bring your own free Gemini API key (sidebar); it is used
+> only for your session.
 
 A multi-agent system that acts as an automated Senior Staff Engineer:
 feed it a slow or naive Python script, and it diagnoses the algorithmic
