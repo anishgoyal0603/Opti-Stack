@@ -40,6 +40,6 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install test deps only (no google-genai)
-        run: pip install pytest
+        run: pip install pytest pytest-cov
       - name: Run dependency-free unit tests
         run: pytest tests/test_security_scanner.py tests/test_synthetic_data.py -q
