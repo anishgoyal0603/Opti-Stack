@@ -67,6 +67,21 @@ if api_key:
     os.environ["GEMINI_API_KEY"] = api_key
 
 
+def _redact(text: str) -> str:
+    """Strip the live API key out of any string before it's shown on
+    screen. The Gemini SDK's own error objects build their .message from
+    Google's JSON error body, which doesn't normally echo the key back --
+    but a lower-level transport failure (a connection error, SSL error, or
+    redirect from the underlying HTTP client) can and does include the
+    full request URL, which for API-key auth includes the key as a query
+    parameter. This is a defense-in-depth backstop, not a claim that the
+    normal path leaks -- it makes leaking impossible regardless of which
+    exception type eventually carries the key."""
+    if not text or not api_key or len(api_key) < 8:
+        return text
+    return text.replace(api_key, "[REDACTED]")
+
+
 if st.button("Audit & Optimize Code", type="primary"):
     if not api_key:
         st.error(
@@ -88,11 +103,11 @@ if st.button("Audit & Optimize Code", type="primary"):
                 st.error(
                     "🔑 The Gemini API rejected the request outright (bad key, "
                     "quota, or permissions). Retrying other models will not help.\n\n"
-                    f"Details: {e}"
+                    f"Details: {_redact(str(e))}"
                 )
                 st.stop()
             except Exception as e:
-                st.error(f"Pipeline failed: {e}")
+                st.error(f"Pipeline failed: {_redact(str(e))}")
                 st.stop()
 
         status_box.empty()
