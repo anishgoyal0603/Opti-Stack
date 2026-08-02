@@ -39,7 +39,10 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install test deps only (no google-genai)
-        run: pip install pytest pytest-cov
+      - name: Install test deps only (deliberately no google-genai)
+        run: pip install pytest pytest-cov python-dotenv
       - name: Run dependency-free unit tests
-        run: pytest tests/test_security_scanner.py tests/test_synthetic_data.py -q
+        # --no-cov: pyproject.toml applies a 70% coverage floor to every
+        # pytest run, which a deliberate single-file subset can never meet.
+        # This job proves imports work without the Gemini SDK, not coverage.
+        run: pytest tests/test_security_scanner.py -q --no-cov
