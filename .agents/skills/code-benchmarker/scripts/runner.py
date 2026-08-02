@@ -142,4 +142,3 @@ if __name__ == "__main__":
     output = run_profile(sys.argv[1])
     print(json.dumps(output))
     sys.exit(0 if output["status"] == "SUCCESS" else 1)
-ENDOFFILE
