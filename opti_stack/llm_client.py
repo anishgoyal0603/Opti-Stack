@@ -1,22 +1,25 @@
 """
 Thin wrapper around the Gemini API with retry and model fallback.
 
-Pulled out of orchestrator.py so "how we talk to the LLM" is a separate
-concern from "what order agents run in" -- either can change without
-touching the other.
-
 Retry policy: transient failures (429, 500, 502, 503, 504) are retried on
-the same model with exponential backoff and jitter, because they usually
-clear on their own. Terminal failures (400, 401, 403, 404) fail immediately
--- a malformed request or a bad key will fail identically on every model, so
-walking the whole fallback chain just multiplies latency by the number of
-models for no benefit.
+the same model with exponential backoff and jitter. Terminal failures (400,
+401, 403, 404) fail immediately -- a malformed request or bad key fails
+identically on every model, so walking the whole fallback chain just
+multiplies latency for no benefit.
 
-The google.genai import is deliberately deferred to __init__/call rather than
-done at module scope: orchestrator.py imports this module at the top of the
-file, so a module-scope import would make the Gemini SDK a hard dependency of
-every unit test that imports orchestrator -- including tests for the security
+The google.genai import is deliberately deferred to call time rather than
+module scope: orchestrator.py imports this module at the top of the file, so
+a module-scope import would make the Gemini SDK a hard dependency of every
+unit test that imports orchestrator -- including tests for the security
 scanner and synthetic-data helpers that never touch an LLM.
+
+API-key handling: the key is passed *explicitly* into the constructor and
+handed straight to genai.Client(api_key=...). It is NEVER read from or
+written to os.environ here. On a hosted multi-session deployment (e.g.
+Streamlit Community Cloud) the whole app is one OS process shared across all
+visitors, so mutating os.environ with one visitor's key would leak it into
+another visitor's concurrent request. Keeping the key inside this per-request
+client object confines it to the session that supplied it.
 """
 
 import os
@@ -38,8 +41,7 @@ BASE_BACKOFF_SECONDS = 1.0
 
 def _fallback_models():
     """The fallback chain, overridable without a code change via
-    OPTISTACK_MODELS="gemini-3.5-flash,gemini-3.1-pro-preview" so a model
-    deprecation doesn't require editing source."""
+    OPTISTACK_MODELS="gemini-3.5-flash,gemini-3.1-pro-preview"."""
     raw = os.environ.get("OPTISTACK_MODELS")
     if raw:
         return [m.strip() for m in raw.split(",") if m.strip()]
@@ -53,12 +55,17 @@ class TerminalAPIError(RuntimeError):
 
 
 class GeminiClient:
-    """Shared by both the CLI and the Streamlit UI, so they can never
-    drift into two different implementations of retry/fallback."""
+    """Shared by both the CLI and the Streamlit UI, so they can never drift
+    into two different implementations of retry/fallback.
 
-    def __init__(self, models=None, sleep=time.sleep):
+    `api_key` is optional: when provided it is passed straight to the SDK
+    client for this instance only. When omitted, the SDK falls back to its
+    own default credential discovery (useful for local CLI use with a single
+    developer key), but the UI always passes the session's key explicitly."""
+
+    def __init__(self, models=None, sleep=time.sleep, api_key=None):
         from google import genai
-        self.client = genai.Client()
+        self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
         self.models = models or _fallback_models()
         self._sleep = sleep  # injectable so tests don't actually wait
 

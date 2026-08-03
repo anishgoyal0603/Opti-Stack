@@ -1,17 +1,15 @@
 import os
 import sys
+import time
 import json
 import streamlit as st
 
 # ui/app.py lives in a sibling folder to opti_stack/, so add the repo root
-# to sys.path before importing it. Without this, `from opti_stack...` would
-# fail with ModuleNotFoundError when running `streamlit run ui/app.py`
-# from the repo root, since Python only auto-adds the script's own
-# directory (ui/), not its parent, to sys.path.
+# to sys.path before importing it.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opti_stack.orchestrator import execute_pipeline
-from opti_stack.llm_client import TerminalAPIError
+from opti_stack.llm_client import GeminiClient, TerminalAPIError
 
 st.set_page_config(page_title="Opti-Stack: Autonomous Algorithmic Auditor", layout="wide")
 
@@ -19,6 +17,18 @@ st.title("⚡ Opti-Stack: Autonomous Algorithmic Auditor")
 st.caption(
     "A multi-agent system (Analyst → Optimizer → Benchmarker → Verifier) "
     "that analyzes, rewrites, and verifies the correctness of optimized Python code."
+)
+
+# --- Public-demo disclaimer / lightweight terms of use (Fix 6). A public app
+# that runs strangers' code and asks for an API key should say plainly what it
+# does and does not promise, so this is stated up front rather than buried. ---
+st.info(
+    "**Demonstration tool.** Opti-Stack runs submitted Python in a sandboxed "
+    "subprocess (static security scan + memory/CPU limits + a short timeout) "
+    "for demo purposes only — this is not a hardened multi-tenant sandbox. "
+    "Do not submit malicious code, secrets, or personal data. Submitted code "
+    "may be temporarily logged for debugging. Provided as-is, without warranty.",
+    icon="ℹ️",
 )
 
 user_code = st.text_area(
@@ -45,15 +55,13 @@ with st.sidebar:
     )
     st.caption(
         "Opti-Stack runs your code in a sandboxed subprocess with a static "
-        "security scan and a 10-second timeout. Do not paste secrets you "
-        "wouldn't want to type into any web form."
+        "security scan, memory/CPU limits, and a 10-second timeout. Do not "
+        "paste secrets you wouldn't want to type into any web form."
     )
 
 # Precedence: a key typed into the sidebar (a visitor using the deployed app)
-# beats st.secrets (the deployer's own fallback key, set in Streamlit Cloud's
-# Secrets panel) beats a plain environment variable (local development via
-# .env). This means a stranger using the public URL never touches your quota
-# unless they choose to leave the sidebar blank and you've left a fallback in.
+# beats st.secrets (the deployer's own fallback key) beats a plain environment
+# variable (local development via .env).
 
 def _safe_secret(key, default=""):
     try:
@@ -63,20 +71,36 @@ def _safe_secret(key, default=""):
 
 api_key = user_key or _safe_secret("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 
-if api_key:
-    os.environ["GEMINI_API_KEY"] = api_key
+# NOTE (Fix 3): we deliberately do NOT write api_key into os.environ. On a
+# hosted multi-session deployment the whole app is one shared OS process, so
+# os.environ is global state -- writing one visitor's key there would leak it
+# into another visitor's concurrent run. The key is passed explicitly into a
+# per-session GeminiClient below instead.
+
+
+# --- Per-session rate limiting (Fix 4). A single click fans out to several
+# LLM calls and dozens of subprocess spawns, so an unthrottled button is a
+# cheap way to burn CPU (and any fallback key's quota). This is a per-session
+# limit, which stops casual hammering; true per-IP limiting needs a reverse
+# proxy in front and is out of scope for free Streamlit Cloud. ---
+RUN_WINDOW_SECONDS = 60
+MAX_RUNS_PER_WINDOW = 5
+
+
+def _rate_limited() -> bool:
+    now = time.time()
+    runs = st.session_state.setdefault("run_times", [])
+    runs[:] = [t for t in runs if now - t < RUN_WINDOW_SECONDS]
+    if len(runs) >= MAX_RUNS_PER_WINDOW:
+        return True
+    runs.append(now)
+    return False
 
 
 def _redact(text: str) -> str:
-    """Strip the live API key out of any string before it's shown on
-    screen. The Gemini SDK's own error objects build their .message from
-    Google's JSON error body, which doesn't normally echo the key back --
-    but a lower-level transport failure (a connection error, SSL error, or
-    redirect from the underlying HTTP client) can and does include the
-    full request URL, which for API-key auth includes the key as a query
-    parameter. This is a defense-in-depth backstop, not a claim that the
-    normal path leaks -- it makes leaking impossible regardless of which
-    exception type eventually carries the key."""
+    """Strip the live API key out of any string before it's shown on screen.
+    Defense-in-depth: a low-level transport error can echo the request URL,
+    which for API-key auth includes the key as a query parameter."""
     if not text or not api_key or len(api_key) < 8:
         return text
     return text.replace(api_key, "[REDACTED]")
@@ -88,17 +112,24 @@ if st.button("Audit & Optimize Code", type="primary"):
             "Enter a Gemini API key in the sidebar before running "
             "(or set GEMINI_API_KEY in your local .env for development)."
         )
+    elif _rate_limited():
+        st.warning(
+            f"Rate limit reached ({MAX_RUNS_PER_WINDOW} runs per "
+            f"{RUN_WINDOW_SECONDS}s). Please wait a moment and try again."
+        )
     else:
         status_box = st.empty()
         status_log = []
 
         def on_status(msg: str):
             status_log.append(msg)
-            status_box.info("\n\n".join(status_log[-6:]))  # show last few lines
+            status_box.info("\n\n".join(status_log[-6:]))
 
         with st.spinner("Running multi-agent pipeline..."):
             try:
-                result = execute_pipeline(user_code, on_status=on_status)
+                # Session-scoped client carrying this session's key only.
+                client = GeminiClient(api_key=api_key)
+                result = execute_pipeline(user_code, on_status=on_status, client=client)
             except TerminalAPIError as e:
                 st.error(
                     "🔑 The Gemini API rejected the request outright (bad key, "
@@ -120,13 +151,13 @@ if st.button("Audit & Optimize Code", type="primary"):
             for v in result.get("security_violations", []):
                 st.write(f"- {v}")
             st.info(
-                "Opti-Stack will not execute code that imports os/subprocess/socket "
-                "or calls eval/exec/open, even from the original input. Remove these "
-                "and try again."
+                "Opti-Stack will not execute code that imports os/subprocess/socket, "
+                "calls eval/exec/open, references __builtins__, or uses dunder "
+                "attributes (e.g. .__class__). Remove these and try again."
             )
             st.stop()
 
-        # --- Agent trace (this is your "observability" course concept) ---
+        # --- Agent trace (the "observability" course concept) ---
         with st.expander("🔍 Full agent trace", expanded=False):
             for step in result["steps"]:
                 st.markdown(f"**Agent: `{step['agent']}`**" + (f" (attempt {step.get('attempt')})" if "attempt" in step else ""))
@@ -158,8 +189,7 @@ if st.button("Audit & Optimize Code", type="primary"):
                 st.error(
                     "🛑 Every optimization attempt was rejected by the security "
                     "scanner before it was ever executed — the model kept proposing "
-                    "unsafe code (e.g. file/process/network operations). No benchmark "
-                    "is available because nothing was run."
+                    "unsafe code. No benchmark is available because nothing was run."
                 )
                 st.code(result["steps"][-1]["code"], language="python")
             else:
@@ -173,10 +203,6 @@ if st.button("Audit & Optimize Code", type="primary"):
         st.markdown("---")
         st.subheader("3. Benchmark Comparison")
 
-        # Defensive: the last recorded step may be a security-rejection dict
-        # with no "benchmark" key (orchestrator already guards this with
-        # .get("benchmark", {}) before returning, but we guard again here
-        # since this UI should never crash on a malformed/partial result).
         orig_b = result.get("original_benchmark_summary") or {}
         opt_b = result.get("optimized_benchmark_summary") or {}
 
@@ -196,9 +222,6 @@ if st.button("Audit & Optimize Code", type="primary"):
                     st.metric("Speedup", f"{speedup:.1f}x")
                 st.metric("Correctness verified", "Yes" if result["verified"] else "No")
 
-        # --- Scale sweep: this data was being computed by the orchestrator
-        # but never rendered here. Fixed: it's now shown as both a table
-        # and a line chart so the "stress test at scale" claim is visible. ---
         sweep = result.get("scale_sweep", [])
         if sweep:
             st.markdown("---")
@@ -207,7 +230,6 @@ if st.button("Audit & Optimize Code", type="primary"):
                 "Both versions are re-run at increasing synthetic input sizes "
                 "to show how the original's complexity degrades versus the optimized version."
             )
-
             sweep_table = [
                 {
                     "Scale": row["scale"],
