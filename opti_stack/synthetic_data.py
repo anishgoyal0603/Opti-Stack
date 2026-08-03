@@ -1,22 +1,5 @@
 """
 Synthetic stress-test data generator.
-
-The original pitch claimed the system "injects thousands of rows of
-synthetic data to stress-test" submitted code. Nothing in the original
-implementation did this -- it only ran the benchmark once, against
-whatever single example was in the textbox.
-
-This module makes that claim true. It rewrites the user's script to run
-at multiple input scales (e.g. 100, 1000, 10000) and returns a comparison
-table, so the demo can show the original algorithm's runtime exploding
-quadratically while the optimized version stays roughly linear -- this is
-the single most convincing visual for the "wow factor" judges call out.
-
-Approach: rather than trying to magically guess the user's function
-signature, we ask the user's script to expose one integer "scale" via a
-simple, explicit convention: a top-level variable named SCALE. We inject
-different values of SCALE before execution. This is simple, predictable,
-and avoids fragile AST surgery on arbitrary user code.
 """
 
 import re
@@ -24,7 +7,24 @@ from dataclasses import dataclass
 from typing import List
 
 
-DEFAULT_SCALES = [100, 1_000, 5_000]
+# Reduced from [100, 1_000, 5_000] to shrink the amount of work a single
+# public-demo click can trigger. The scale sweep runs two script variants at
+# every scale, each spawning several benchmark subprocesses, so trimming one
+# scale meaningfully cuts the per-request subprocess fan-out (part of the
+# rate-limiting / DoS-surface hardening). Override without a code change via
+# OPTISTACK_SCALES="100,1000,5000" if you want the wider sweep locally.
+import os as _os
+
+def _default_scales() -> List[int]:
+    raw = _os.environ.get("OPTISTACK_SCALES")
+    if raw:
+        try:
+            return [int(x.strip()) for x in raw.split(",") if x.strip()]
+        except ValueError:
+            pass
+    return [100, 1_000]
+
+DEFAULT_SCALES = _default_scales()
 
 
 @dataclass
@@ -34,26 +34,12 @@ class ScaledVariant:
 
 
 def inject_scale(script: str, scale: int) -> str:
-    """Injects or overrides a top-level SCALE = <int> assignment at the
-    top of the script. If the LLM-generated code already references
-    SCALE, this lets us drive it. If it doesn't, this is a no-op the
-    benchmark simply ignores (the script runs once at whatever the
-    LLM hardcoded -- still useful, just not scale-swept)."""
     injected = f"SCALE = {scale}\n"
-    # Strip any existing top-level SCALE assignment to avoid duplicate
-    # definitions confusing readers of the generated sandbox file.
     cleaned = re.sub(r"^SCALE\s*=\s*\d+\s*$", "", script, flags=re.MULTILINE)
     return injected + cleaned
 
 
 def extract_scale_value(script: str, default: int = 1000) -> int:
-    """Pulls the integer value out of a top-level 'SCALE = <int>' line,
-    e.g. from the Normalizer's output, so that value can be re-injected
-    into the Optimizer's code for the main verification run. Without
-    this, code that follows SCALE_AWARE_OPTIMIZER_SUFFIX's instructions
-    (reading a SCALE variable) would raise NameError the moment it's
-    executed on its own -- SCALE was never actually defined anywhere
-    outside the scale-sweep step, which runs later in the pipeline."""
     match = re.search(r"^SCALE\s*=\s*(\d+)\s*$", script, flags=re.MULTILINE)
     return int(match.group(1)) if match else default
 
