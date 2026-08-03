@@ -1,28 +1,16 @@
 """
-Opti-Stack orchestrator.
-
-This is the Coordinator: it decides what order agents run in and how to
-branch based on their output. It intentionally contains no LLM-calling
-mechanics (see llm_client.py), no prompt text (see prompts.py), no
-benchmarking mechanics (see benchmarking.py), and no correctness-checking
-logic (see verification.py) -- those are each a separate, focused module
-so this file stays readable as "the flow", not "the flow plus everything
-each step does internally".
-
-  Coordinator (this module)
-    -> Security Scanner  : rejects unsafe code before anything else runs
-    -> Analyst agent      : diagnoses complexity bottlenecks
-    -> Normalizer agent    : extracts a SCALE variable for fair stress-testing
-    -> Optimizer agent     : proposes a rewrite
-    -> Security Scanner   : rejects unsafe rewrites before they ever execute
-    -> Benchmarker skill    : measures speed/memory (existing runner.py)
-    -> Verifier            : checks output equivalence, deterministically
-    -> Coordinator decides : accept, or send back to Optimizer with the
-                              verifier's failure reason (retry loop, bounded)
+Opti-Stack orchestrator (the Coordinator): decides what order agents run in
+and how to branch on their output. It contains no LLM-calling mechanics (see
+llm_client.py), no prompt text (see prompts.py), no benchmarking mechanics
+(see benchmarking.py), and no correctness-checking logic (see
+verification.py).
 
 Every completed run is also persisted to disk as a JSON trace (see
-_persist_trace below) -- this is what makes "observability" a concrete,
-inspectable artifact rather than just a word on a resume.
+_persist_trace) -- this is what makes "observability" a concrete, inspectable
+artifact. That persistence is now bounded (retention cap) and disableable,
+because the trace contains the user's submitted code and, left unbounded,
+would grow forever and retain strangers' code indefinitely on a public
+deployment.
 """
 
 import os
@@ -51,21 +39,54 @@ TRACE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "traces"
 )
 
+# How many trace files to keep on disk. The oldest are pruned after each
+# write so the directory can't grow without bound. Override with
+# OPTISTACK_TRACE_RETENTION. Set OPTISTACK_PERSIST_TRACES=0 to turn on-disk
+# trace persistence off entirely (the trace is still returned in-memory and
+# still downloadable from the UI -- only the disk copy is skipped), which is
+# the right setting for a public deploy that shouldn't retain user code.
+TRACE_RETENTION = int(os.environ.get("OPTISTACK_TRACE_RETENTION", "50"))
+
+
+def _prune_traces(trace_dir: str, keep: int) -> None:
+    """Keep only the `keep` most recently modified trace files; delete the
+    rest. Best-effort: a filesystem hiccup here must never break a run."""
+    try:
+        paths = [
+            os.path.join(trace_dir, name)
+            for name in os.listdir(trace_dir)
+            if name.endswith(".json")
+        ]
+        paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        for old in paths[keep:]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
 
 def _persist_trace(trace: dict) -> dict:
-    """Writes a structured JSON trace per run to disk. This is what makes the
-    'observability' claim concrete: every agent input, output and verdict is
-    recoverable after the fact, not just rendered once in the UI. Never lets
-    a disk/write problem break the actual pipeline run -- telemetry failing
-    silently degrades to trace_path=None rather than crashing the request."""
+    """Writes a structured JSON trace per run to disk, then prunes old traces
+    so the directory stays bounded. Never lets a disk/write problem break the
+    actual pipeline run -- telemetry failing degrades to trace_path=None
+    rather than crashing the request. Can be disabled entirely via
+    OPTISTACK_PERSIST_TRACES=0."""
     trace["run_id"] = uuid.uuid4().hex[:12]
     trace["completed_at"] = datetime.now(timezone.utc).isoformat()
+
+    if os.environ.get("OPTISTACK_PERSIST_TRACES", "1") != "1":
+        trace["trace_path"] = None
+        return trace
+
     try:
         os.makedirs(TRACE_DIR, exist_ok=True)
         path = os.path.join(TRACE_DIR, f"{trace['run_id']}.json")
         with open(path, "w") as f:
             json.dump(trace, f, indent=2, default=str)
         trace["trace_path"] = path
+        _prune_traces(TRACE_DIR, TRACE_RETENTION)
     except OSError:
         trace["trace_path"] = None
     return trace
@@ -78,9 +99,10 @@ def extract_code(text: str) -> str:
 
 def execute_pipeline(raw_user_script: str, on_status=None, client=None) -> dict:
     """Public entry point. Each invocation gets its own temp directory so
-    concurrent runs (e.g. two Streamlit users) can never read or overwrite
-    each other's generated scripts. `client` is accepted here so tests can
-    inject a fake LLM client instead of monkeypatching the module global."""
+    concurrent runs can never read or overwrite each other's generated
+    scripts. `client` is accepted here so the UI can inject a session-scoped
+    GeminiClient (carrying that session's API key) and tests can inject a
+    fake client."""
     run_dir = tempfile.mkdtemp(prefix="optistack_run_")
     try:
         return _execute_pipeline_in(run_dir, raw_user_script, on_status, client)
@@ -89,11 +111,6 @@ def execute_pipeline(raw_user_script: str, on_status=None, client=None) -> dict:
 
 
 def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, client=None) -> dict:
-    """Coordinator entry point. Returns a structured dict containing every
-    intermediate artifact, so both the CLI and the Streamlit UI can render
-    the full agent trace (this also gives you the 'observability' course
-    concept almost for free)."""
-
     def status(msg):
         if on_status:
             on_status(msg)
@@ -239,6 +256,3 @@ print(f"Matches: {process_data(1000)}")
     result = execute_pipeline(test_script)
     print("\n=== FINAL RESULT ===")
     print(f"Verified: {result['verified']}")
-    if result["verified"]:
-        print(f"Original:  {result['original_benchmark_summary']}")
-        print(f"Optimized: {result['optimized_benchmark_summary']}")
