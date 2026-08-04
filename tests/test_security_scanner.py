@@ -1,6 +1,6 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from opti_stack.security_scanner import scan_code
+from opti_stack.security_scanner import scan_code, MAX_SOURCE_CHARS
 import pytest
 
 def test_scanner_allows_safe_code():
@@ -40,13 +40,24 @@ BYPASS_PAYLOADS = {
     "getattr_gadget": "f = getattr(str, 'upper')",
     "from_import_escape": "from importlib import import_module",
     "aliased_os": "import os as o\no.system('x')",
-    # --- NEW: no-import object-graph escapes the old scanner let through ---
+    # no-import object-graph escapes
     "subclass_walk": "print(().__class__.__bases__[0].__subclasses__())",
     "dunder_class_chain": "x = ''.__class__.__mro__",
     "dunder_globals": "def f():\n    pass\nprint(f.__globals__)",
     "builtins_name_ref": "print(__builtins__)",
     "builtins_subscript": "__builtins__['eval']('1+1')",
     "builtins_attr_import": "__builtins__.__import__('os')",
+    # format-template traversal: dunders hidden inside a string constant, so
+    # the AST contains no Attribute node for the dunder rule to catch
+    "format_string_class": 'print("{0.__class__}".format(()))',
+    "format_string_deep": 'print("{0.__class__.__bases__[0]}".format(()))',
+    "format_globals_leak": 'def f(): pass\nprint("{0.__globals__}".format(f))',
+    "format_map_variant": 'print("{a.__class__}".format_map({"a": ()}))',
+    # dangerous dunders that must stay blocked despite the SAFE_DUNDERS list
+    "dunder_dict": "class A: pass\nprint(A.__dict__)",
+    "dunder_code": "def f(): pass\nprint(f.__code__)",
+    "dunder_reduce": "print(().__reduce__)",
+    "dunder_getattribute": "print(''.__getattribute__)",
 }
 
 LEGITIMATE_OPTIMIZATIONS = {
@@ -55,6 +66,12 @@ LEGITIMATE_OPTIMIZATIONS = {
     "math_and_itertools": "import math, itertools, heapq, functools\nprint(math.isqrt(16))",
     "name_main_guard": "def main():\n    print(sum(range(10)))\nif __name__ == '__main__':\n    main()",
     "comprehension": "data = [i*i for i in range(1000)]\nprint(sum(data))",
+    # ordinary OOP: a blanket dunder ban wrongly rejected all of these
+    "super_init": "class A:\n    def __init__(self):\n        super().__init__()\nprint(1)",
+    "dunder_len_protocol": "class B:\n    def __len__(self):\n        return 3\nprint(len(B()))",
+    "context_manager": "class C:\n    def __enter__(self):\n        return self\n    def __exit__(self, *a):\n        return False\nwith C():\n    print(1)",
+    "plain_format_call": 'print("{} and {}".format(1, 2))',
+    "fstring_normal": "n = 5\nprint(f'value is {n}')",
 }
 
 @pytest.mark.parametrize("name,source", sorted(BYPASS_PAYLOADS.items()))

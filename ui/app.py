@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from opti_stack.orchestrator import execute_pipeline
 from opti_stack.llm_client import GeminiClient, TerminalAPIError
+from opti_stack.security_scanner import MAX_SOURCE_CHARS
 
 st.set_page_config(page_title="Opti-Stack: Autonomous Algorithmic Auditor", layout="wide")
 
@@ -19,9 +20,9 @@ st.caption(
     "that analyzes, rewrites, and verifies the correctness of optimized Python code."
 )
 
-# --- Public-demo disclaimer / lightweight terms of use (Fix 6). A public app
-# that runs strangers' code and asks for an API key should say plainly what it
-# does and does not promise, so this is stated up front rather than buried. ---
+# --- Public-demo disclaimer / lightweight terms of use. A public app that runs
+# strangers' code and asks for an API key should say plainly what it does and
+# does not promise, so this is stated up front rather than buried. ---
 st.info(
     "**Demonstration tool.** Opti-Stack runs submitted Python in a sandboxed "
     "subprocess (static security scan + memory/CPU limits + a short timeout) "
@@ -34,6 +35,7 @@ st.info(
 user_code = st.text_area(
     "Paste your unoptimized Python code here:",
     height=200,
+    max_chars=MAX_SOURCE_CHARS,
     value="""def process_data(limit):
     data_list = list(range(limit))
     matches = 0
@@ -71,18 +73,23 @@ def _safe_secret(key, default=""):
 
 api_key = user_key or _safe_secret("GEMINI_API_KEY", "") or os.environ.get("GEMINI_API_KEY", "")
 
-# NOTE (Fix 3): we deliberately do NOT write api_key into os.environ. On a
-# hosted multi-session deployment the whole app is one shared OS process, so
+# NOTE: we deliberately do NOT write api_key into os.environ. On a hosted
+# multi-session deployment the whole app is one shared OS process, so
 # os.environ is global state -- writing one visitor's key there would leak it
 # into another visitor's concurrent run. The key is passed explicitly into a
 # per-session GeminiClient below instead.
 
 
-# --- Per-session rate limiting (Fix 4). A single click fans out to several
-# LLM calls and dozens of subprocess spawns, so an unthrottled button is a
-# cheap way to burn CPU (and any fallback key's quota). This is a per-session
-# limit, which stops casual hammering; true per-IP limiting needs a reverse
-# proxy in front and is out of scope for free Streamlit Cloud. ---
+# --- Per-session rate limiting. A single click fans out to several LLM calls
+# and many subprocess spawns, so an unthrottled button is a cheap way to burn
+# CPU (and any fallback key's quota).
+#
+# Be clear about what this is worth: st.session_state is per browser session,
+# so an incognito window or a scripted client gets a fresh budget. This stops
+# casual button-mashing and nothing more. Real per-IP limiting needs a reverse
+# proxy in front of the app, which is out of scope on free Streamlit Cloud.
+# The input-size cap below is the control that actually protects the process,
+# because it blocks a single-request kill that no rate limit could catch. ---
 RUN_WINDOW_SECONDS = 60
 MAX_RUNS_PER_WINDOW = 5
 
@@ -112,6 +119,17 @@ if st.button("Audit & Optimize Code", type="primary"):
             "Enter a Gemini API key in the sidebar before running "
             "(or set GEMINI_API_KEY in your local .env for development)."
         )
+    elif len(user_code) > MAX_SOURCE_CHARS:
+        # Belt-and-braces with the text area's max_chars: parsing oversized
+        # input happens in this shared process, before any subprocess limit
+        # can apply, so it must be refused here as well as in the scanner.
+        st.error(
+            f"Script too long ({len(user_code):,} characters). The limit is "
+            f"{MAX_SOURCE_CHARS:,}. Parsing input this large can exhaust the "
+            f"server process before the sandbox applies."
+        )
+    elif not user_code.strip():
+        st.warning("Paste some Python code first.")
     elif _rate_limited():
         st.warning(
             f"Rate limit reached ({MAX_RUNS_PER_WINDOW} runs per "
@@ -152,8 +170,10 @@ if st.button("Audit & Optimize Code", type="primary"):
                 st.write(f"- {v}")
             st.info(
                 "Opti-Stack will not execute code that imports os/subprocess/socket, "
-                "calls eval/exec/open, references __builtins__, or uses dunder "
-                "attributes (e.g. .__class__). Remove these and try again."
+                "calls eval/exec/open, references __builtins__, or reaches internals "
+                "through dunder attributes (e.g. .__class__) — including dunders "
+                "hidden inside a format template. Ordinary methods like __init__ "
+                "and __len__ are fine."
             )
             st.stop()
 
@@ -253,6 +273,12 @@ if st.button("Audit & Optimize Code", type="primary"):
                 st.line_chart(df)
             except ImportError:
                 st.info("Install pandas to see the scale-sweep line chart (table above still shows the raw numbers).")
+        elif result.get("scale_sweep_skipped"):
+            st.info(
+                "Scale sweep skipped for this run — "
+                + result.get("scale_sweep_skip_reason", "the original script was too slow to sweep.")
+                + " The single-point benchmark above is still valid."
+            )
         elif result["verified"]:
             st.info(
                 "Scale sweep produced no data for this run — this can happen if the "

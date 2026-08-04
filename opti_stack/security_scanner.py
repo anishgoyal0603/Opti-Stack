@@ -1,43 +1,67 @@
 """
 Static security scanner for LLM-generated code.
 
-Before this module existed, the pipeline executed whatever the Optimizer
-agent produced directly in a subprocess, with no check on *what* that code
-actually does beyond a timeout. An LLM could (accidentally, or if the
-input script was adversarial/prompt-injected) generate code that deletes
-files, opens a network connection, or shells out -- and the old pipeline
-would run it the same way it ran a harmless loop.
+The pipeline executes whatever the Optimizer agent produces. This module
+performs a static AST scan (no execution) and rejects code that uses a
+denylisted set of dangerous constructs BEFORE it ever reaches runner.py's
+subprocess. It runs on the user's original input and on every agent-generated
+rewrite, every attempt, with no opt-out.
 
-This module performs a static AST scan (no execution) and rejects code
-that uses a denylisted set of dangerous calls/imports BEFORE it ever
-reaches runner.py's subprocess. It runs on every agent-generated rewrite,
-every attempt, with no opt-out.
+What gets rejected, and why each rule exists:
 
-Three classes of thing are rejected:
-  1. Denylisted imports (os, subprocess, socket, ...).
-  2. Denylisted bare builtins (eval, exec, open, getattr, ...).
-  3. Attribute access that is either rooted at a denylisted module name
-     (os.system(...)) OR uses ANY dunder attribute (.__class__,
-     .__subclasses__, .__globals__, .__builtins__, ...). The dunder rule
-     is what closes the classic "no-import" sandbox escapes, which never
-     touch an import or a denylisted builtin name and instead walk Python's
-     object graph -- e.g. ().__class__.__bases__[0].__subclasses__() to
-     reach Popen. Legitimate numeric/algorithmic optimization code has no
-     reason to touch dunder attributes, so blocking them wholesale is a
-     cheap, high-value rule rather than a real usability cost.
+  1. Source larger than MAX_SOURCE_CHARS, checked *before* ast.parse().
+     This is a parser-level denial-of-service guard, not a code-safety rule.
+     ast.parse() runs in the caller's process -- on a hosted deployment that
+     is the single shared Streamlit process, where none of runner.py's child
+     resource limits apply. Parsing is roughly linear in input size at about
+     400 MB of peak memory per MB of source, so a ~2.4 MB paste of entirely
+     benign statements ("x = 1" repeated) consumes ~1 GB and ~20 s of CPU and
+     will OOM a typical 1 GB instance in a single request. Rate limiting does
+     not help when one request suffices, so the size check must come first.
 
-This is still a denylist, NOT a sandbox replacement -- it catches the known
-and common dangerous patterns, not a fully adversarial bypass. It is one
-layer; the subprocess resource limits (RLIMIT_AS / RLIMIT_CPU in runner.py),
-the wall-clock timeout, and the per-run temp directory are the others. Do
-not expose this to untrusted multi-tenant traffic without a real container
-or gVisor boundary underneath it.
+  2. Denylisted imports (os, subprocess, socket, ...).
+
+  3. Denylisted bare builtins (eval, exec, open, getattr, ...).
+
+  4. Attribute access rooted at a denylisted module name (os.system(...)),
+     and dunder attribute access outside a small SAFE_DUNDERS allowlist.
+     The dunder rule closes the classic "no-import" object-graph escapes,
+     which touch neither an import nor a denylisted builtin -- e.g.
+     ().__class__.__bases__[0].__subclasses__() to reach Popen. The allowlist
+     exists because a blanket ban also rejected ordinary object-oriented code
+     (super().__init__() being the obvious casualty). Every name on the
+     allowlist is a protocol method that cannot traverse the object graph;
+     the escape-critical ones (__class__, __bases__, __mro__, __subclasses__,
+     __globals__, __code__, __closure__, __dict__, __reduce__,
+     __getattribute__, ...) all remain blocked.
+
+  5. Dunder attribute traversal hidden inside a str.format template, e.g.
+     "{0.__class__.__bases__[0]}".format(()). Here the dunders live in a
+     string constant, so the AST contains no Attribute node at all and rule 4
+     never sees them. Note the honest limits of this rule: it pattern-matches
+     the template literal, so a template assembled at runtime from
+     concatenated fragments still evades it. That residual gap is accepted
+     because format-template traversal can *read* attributes but cannot call
+     them -- it is an information-disclosure primitive, not code execution --
+     and the child process runs each script in a fresh runpy namespace that
+     holds no credentials.
+
+This is a denylist, NOT a sandbox replacement. It is one layer; the child
+process's RLIMIT_AS / RLIMIT_CPU / RLIMIT_FSIZE, the wall-clock timeout and
+sampling budget, the captured-output cap, and the per-run temp directory are
+the others. Do not expose this to untrusted multi-tenant traffic without a
+real container or gVisor boundary underneath it.
 """
 
 import ast
+import re
 from dataclasses import dataclass, field
 from typing import List
 
+
+# Parser-level DoS guard. 50k characters is far more than any realistic
+# submitted script and keeps ast.parse()'s peak well under ~25 MB.
+MAX_SOURCE_CHARS = 50_000
 
 DENYLISTED_IMPORTS = {
     # process / system
@@ -61,18 +85,33 @@ DENYLISTED_CALLS = {
     "globals", "locals", "vars", "memoryview",
 }
 
-# Bare *names* that must never be referenced at all, even without a call --
-# reaching __builtins__ (which can be a dict or a module) is the first step
-# of several escapes (__builtins__['eval'], __builtins__.__import__, ...),
-# so we reject the name on sight rather than trying to catch every way it
-# can then be indexed or called.
+# Bare names that must never be referenced at all, even without a call.
 DENYLISTED_NAMES = {"__builtins__", "__builtin__"}
 
-# os.system, os.remove, etc. -- checked via attribute access on names that
-# resolve back to a denylisted import. __builtins__ is included so that
-# __builtins__.eval(...) is caught here too, belt-and-braces with the name
-# rule above.
 DENYLISTED_ATTR_ROOTS = DENYLISTED_IMPORTS | {"__builtins__"}
+
+# Dunder attributes that ordinary object-oriented code legitimately touches
+# and that cannot be used to walk toward dangerous internals. Anything not on
+# this list is rejected. Keep this list conservative: adding a traversal
+# primitive here (__class__, __bases__, __globals__, __dict__, ...) would
+# reopen the object-graph escape the dunder rule exists to close.
+SAFE_DUNDERS = {
+    "__init__", "__new__", "__del__",
+    "__str__", "__repr__", "__format__",
+    "__len__", "__iter__", "__next__", "__contains__", "__reversed__",
+    "__getitem__", "__setitem__", "__delitem__",
+    "__enter__", "__exit__",
+    "__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__", "__hash__",
+    "__add__", "__sub__", "__mul__", "__truediv__", "__floordiv__",
+    "__mod__", "__pow__", "__neg__", "__abs__", "__round__",
+    "__radd__", "__rsub__", "__rmul__",
+    "__bool__", "__int__", "__float__", "__index__",
+    "__call__", "__copy__", "__deepcopy__",
+}
+
+# Matches a str.format replacement field that performs attribute access on a
+# dunder, e.g. "{0.__class__}" or "{obj.__globals__[KEY]}".
+_FORMAT_DUNDER_RE = re.compile(r"\{[^{}]*\.__\w")
 
 
 @dataclass
@@ -86,16 +125,31 @@ def _is_dunder(name: str) -> bool:
 
 
 def scan_code(source: str) -> ScanResult:
-    """Parses source with ast.parse (no execution) and walks the tree
-    looking for denylisted imports, denylisted bare calls, denylisted bare
-    names, dunder attribute access, and attribute access rooted at a
-    denylisted module name (e.g. os.system(...))."""
+    """Parses source with ast.parse (no execution) and walks the tree looking
+    for the constructs documented in this module's docstring. The size check
+    runs first, because ast.parse() itself is the resource risk for oversized
+    input and it executes in the caller's (shared) process."""
+    if source is not None and len(source) > MAX_SOURCE_CHARS:
+        return ScanResult(
+            safe=False,
+            violations=[
+                f"Source too large: {len(source):,} characters "
+                f"(limit {MAX_SOURCE_CHARS:,}). Parsing input this large can "
+                f"exhaust the host process before any sandbox applies."
+            ],
+        )
+
     violations = []
 
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
         return ScanResult(safe=False, violations=[f"Code does not parse: {e}"])
+    except (ValueError, MemoryError, RecursionError) as e:
+        # Deeply nested literals can blow the parser's recursion limit or
+        # memory even under the size cap; treat that as a rejection rather
+        # than letting the exception escape into the pipeline.
+        return ScanResult(safe=False, violations=[f"Code could not be parsed safely: {e}"])
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -115,10 +169,10 @@ def scan_code(source: str) -> ScanResult:
                 violations.append(f"Disallowed reference to '{node.id}' (line {node.lineno})")
 
         elif isinstance(node, ast.Attribute):
-            # Any dunder attribute access is a red flag: this is how the
-            # no-import object-graph escapes reach dangerous internals
+            # Dunder attribute access outside the safe allowlist: this is how
+            # the no-import object-graph escapes reach dangerous internals
             # (e.g. ().__class__.__bases__[0].__subclasses__()).
-            if _is_dunder(node.attr):
+            if _is_dunder(node.attr) and node.attr not in SAFE_DUNDERS:
                 violations.append(
                     f"Disallowed dunder attribute access: '.{node.attr}' (line {node.lineno})"
                 )
@@ -128,6 +182,16 @@ def scan_code(source: str) -> ScanResult:
                     violations.append(
                         f"Disallowed attribute on module '{root}': '{root}.{node.attr}' (line {node.lineno})"
                     )
+
+        elif isinstance(node, ast.Constant):
+            # Dunder traversal smuggled through a str.format template, which
+            # produces no Attribute node for the rule above to catch.
+            if isinstance(node.value, str) and _FORMAT_DUNDER_RE.search(node.value):
+                snippet = node.value[:60]
+                violations.append(
+                    f"Disallowed dunder attribute access inside a format template: "
+                    f"{snippet!r} (line {node.lineno})"
+                )
 
         elif isinstance(node, ast.Call):
             func = node.func
@@ -143,8 +207,8 @@ def scan_code(source: str) -> ScanResult:
 def _resolve_attribute_root(node: ast.Attribute) -> str:
     """For something like os.path.join(...), walk down to the leftmost Name
     node ('os') so attribute chains are still caught. Returns "" when the
-    chain bottoms out on a non-Name (e.g. a literal like ().__class__),
-    which is fine because that case is caught by the dunder rule instead."""
+    chain bottoms out on a non-Name (e.g. a literal like ().__class__), which
+    is fine because that case is caught by the dunder rule instead."""
     current = node.value
     while isinstance(current, ast.Attribute):
         current = current.value
