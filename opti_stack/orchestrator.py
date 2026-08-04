@@ -7,10 +7,9 @@ verification.py).
 
 Every completed run is also persisted to disk as a JSON trace (see
 _persist_trace) -- this is what makes "observability" a concrete, inspectable
-artifact. That persistence is now bounded (retention cap) and disableable,
-because the trace contains the user's submitted code and, left unbounded,
-would grow forever and retain strangers' code indefinitely on a public
-deployment.
+artifact. That persistence is bounded (retention cap) and disableable, because
+the trace contains the user's submitted code and, left unbounded, would grow
+forever and retain strangers' code indefinitely on a public deployment.
 """
 
 import os
@@ -35,12 +34,21 @@ load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file_
 
 MAX_OPTIMIZATION_ATTEMPTS = 3
 
+# The scale sweep is the most expensive part of a run: it benchmarks two
+# script variants at every scale, so it accounts for most of the subprocess
+# fan-out of a single click. If the original script is already slow, the sweep
+# multiplies that cost for very little demonstrative value -- and it is the
+# lever an abuser pulls by submitting something deliberately slow-but-legal
+# (a sleep, say, which burns wall-clock without tripping the CPU limit). Skip
+# it above this threshold and say so honestly in the result.
+SWEEP_MAX_ORIGINAL_MS = 2_000
+
 TRACE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "traces"
 )
 
-# How many trace files to keep on disk. The oldest are pruned after each
-# write so the directory can't grow without bound. Override with
+# How many trace files to keep on disk. The oldest are pruned after each write
+# so the directory can't grow without bound. Override with
 # OPTISTACK_TRACE_RETENTION. Set OPTISTACK_PERSIST_TRACES=0 to turn on-disk
 # trace persistence off entirely (the trace is still returned in-memory and
 # still downloadable from the UI -- only the disk copy is skipped), which is
@@ -70,9 +78,7 @@ def _prune_traces(trace_dir: str, keep: int) -> None:
 def _persist_trace(trace: dict) -> dict:
     """Writes a structured JSON trace per run to disk, then prunes old traces
     so the directory stays bounded. Never lets a disk/write problem break the
-    actual pipeline run -- telemetry failing degrades to trace_path=None
-    rather than crashing the request. Can be disabled entirely via
-    OPTISTACK_PERSIST_TRACES=0."""
+    actual pipeline run. Can be disabled via OPTISTACK_PERSIST_TRACES=0."""
     trace["run_id"] = uuid.uuid4().hex[:12]
     trace["completed_at"] = datetime.now(timezone.utc).isoformat()
 
@@ -233,6 +239,20 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
     if not verified:
         status("[Coordinator] Could not produce a verified-correct optimization within attempt budget.")
         trace["scale_sweep"] = []
+        return _persist_trace(trace)
+
+    original_ms = original_result.duration_ms or 0
+    if original_ms > SWEEP_MAX_ORIGINAL_MS:
+        status(
+            f"[Stress-Tester] Skipping scale sweep: the original script already takes "
+            f"{original_ms:.0f} ms, and sweeping would multiply that cost."
+        )
+        trace["scale_sweep"] = []
+        trace["scale_sweep_skipped"] = True
+        trace["scale_sweep_skip_reason"] = (
+            f"Original script took {original_ms:.0f} ms, above the "
+            f"{SWEEP_MAX_ORIGINAL_MS} ms sweep threshold."
+        )
         return _persist_trace(trace)
 
     status("[Stress-Tester] Running scale sweep across synthetic input sizes...")
