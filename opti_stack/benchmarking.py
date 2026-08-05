@@ -1,8 +1,5 @@
 """
 Runs the code-benchmarker skill as a subprocess and parses its results.
-Separated from orchestrator.py because "how we measure performance" is a
-distinct concern from "what order agents run in and how we branch on
-their output".
 """
 
 import os
@@ -22,18 +19,16 @@ RUNNER_PATH = os.path.join(
 
 @dataclasses.dataclass
 class AgentResult:
-    status: str  # SUCCESS | FAILURE | TIMEOUT | CRITICAL_ERROR
+    status: str
     duration_ms: Optional[float] = None
     peak_memory_kb: Optional[float] = None
     stdout: Optional[str] = None
     stderr: Optional[str] = None
-    runs: Optional[int] = None          # how many timed runs were taken
-    baseline_ms: Optional[float] = None # interpreter startup cost, already subtracted
+    runs: Optional[int] = None
+    baseline_ms: Optional[float] = None
 
 
 def run_benchmark(script_path: str) -> AgentResult:
-    """Calls the code-benchmarker skill as a subprocess and parses its
-    JSON output into a structured result."""
     try:
         proc = subprocess.run(
             [sys.executable, RUNNER_PATH, script_path],
@@ -47,17 +42,22 @@ def run_benchmark(script_path: str) -> AgentResult:
         return AgentResult(status="CRITICAL_ERROR", stderr=str(e))
 
 
-def run_scale_sweep(original_script: str, optimized_script: str, sandbox_dir: str, status) -> list:
-    """Runs both the original and optimized scripts at multiple synthetic
-    input sizes and returns a list of {scale, original_ms, optimized_ms}
-    rows. This is what turns a single-point benchmark into an actual
-    stress test, and produces the data for the 'original explodes,
-    optimized stays flat' chart in the demo."""
+def run_scale_sweep(original_script: str, optimized_script: str, sandbox_dir: str,
+                    status, should_stop=None) -> list:
     rows = []
     original_variants = build_scaled_variants(original_script, DEFAULT_SCALES)
     optimized_variants = build_scaled_variants(optimized_script, DEFAULT_SCALES)
 
     for orig_variant, opt_variant in zip(original_variants, optimized_variants):
+        # The sweep is where most of a run's wall-clock goes: two benchmark
+        # calls per scale. Checking the caller's time budget only *before* the
+        # sweep is useless, because at that point the sweep hasn't spent
+        # anything yet. Check between scales instead, so a run that is already
+        # over budget returns the scales it managed rather than all of them.
+        if should_stop is not None and should_stop():
+            status("[Stress-Tester] Time budget spent; returning partial sweep.")
+            break
+
         orig_path = os.path.join(sandbox_dir, f"original_scale_{orig_variant.scale}.py")
         opt_path = os.path.join(sandbox_dir, f"optimized_scale_{opt_variant.scale}.py")
 

@@ -15,6 +15,7 @@ forever and retain strangers' code indefinitely on a public deployment.
 import os
 import re
 import json
+import time
 import uuid
 import tempfile
 import shutil
@@ -42,6 +43,17 @@ MAX_OPTIMIZATION_ATTEMPTS = 3
 # (a sleep, say, which burns wall-clock without tripping the CPU limit). Skip
 # it above this threshold and say so honestly in the result.
 SWEEP_MAX_ORIGINAL_MS = 2_000
+
+# Total wall-clock a single pipeline run may consume before it stops doing
+# optional work. The per-benchmark sampling budget bounds one call; it does not
+# bound a whole run, which makes up to six benchmark calls. A submission tuned
+# to sit just under SWEEP_MAX_ORIGINAL_MS (a ~1.9 s sleep, say) still passes
+# every per-call limit and measured ~61 s of worker time per click. This budget
+# bounds the run regardless of how the submission is tuned: once it is spent
+# the Coordinator stops retrying and skips the sweep, returning whatever it has
+# verified so far rather than continuing to spend.
+
+PIPELINE_BUDGET_SECONDS = 30
 
 TRACE_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "traces"
@@ -122,6 +134,11 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
             on_status(msg)
         else:
             print(msg)
+
+    pipeline_start = time.perf_counter()
+
+    def budget_spent() -> bool:
+        return (time.perf_counter() - pipeline_start) > PIPELINE_BUDGET_SECONDS
 
     trace = {"steps": []}
 
@@ -220,6 +237,14 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
             verified = True
             break
 
+        if budget_spent():
+            status(
+                "[Coordinator] Pipeline time budget spent; stopping retries "
+                "rather than spending more worker time on this run."
+            )
+            trace["budget_exhausted"] = True
+            break
+
         status(f"[Verifier] FAILED: {verification['reason'][:200]}... retrying with feedback.")
         optimizer_role = OPTIMIZER_RETRY_ROLE
         optimizer_context = (
@@ -241,6 +266,17 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
         trace["scale_sweep"] = []
         return _persist_trace(trace)
 
+    if budget_spent():
+        status("[Stress-Tester] Skipping scale sweep: pipeline time budget spent.")
+        trace["scale_sweep"] = []
+        trace["scale_sweep_skipped"] = True
+        trace["budget_exhausted"] = True
+        trace["scale_sweep_skip_reason"] = (
+            f"Pipeline exceeded its {PIPELINE_BUDGET_SECONDS} s time budget "
+            f"before the sweep, above the sweep threshold."
+        )
+        return _persist_trace(trace)
+
     original_ms = original_result.duration_ms or 0
     if original_ms > SWEEP_MAX_ORIGINAL_MS:
         status(
@@ -256,7 +292,11 @@ def _execute_pipeline_in(run_dir: str, raw_user_script: str, on_status=None, cli
         return _persist_trace(trace)
 
     status("[Stress-Tester] Running scale sweep across synthetic input sizes...")
-    trace["scale_sweep"] = run_scale_sweep(normalized_original, optimized_code, run_dir, status)
+    trace["scale_sweep"] = run_scale_sweep(
+        normalized_original, optimized_code, run_dir, status, should_stop=budget_spent
+    )
+    if budget_spent():
+        trace["budget_exhausted"] = True
 
     return _persist_trace(trace)
 

@@ -103,3 +103,34 @@ def test_scale_sweep_still_runs_for_a_fast_script():
     assert result["verified"] is True
     assert result.get("scale_sweep_skipped") is not True
     assert len(result["scale_sweep"]) > 0
+
+
+def test_pipeline_budget_stops_retrying_when_time_is_spent(monkeypatch):
+    """The per-benchmark sampling budget bounds one call, not a whole run. A
+    submission tuned to sit just under the sweep threshold still passes every
+    per-call limit and measured ~61s of worker time per click. The pipeline
+    budget must bound the run regardless of how the submission is tuned."""
+    monkeypatch.setattr(orchestrator, "PIPELINE_BUDGET_SECONDS", 0)  # instantly spent
+    result = orchestrator.execute_pipeline("print('original')", client=_AlwaysWrongClient())
+    assert result["verified"] is False
+    assert result["budget_exhausted"] is True
+    # Budget spent => stopped after the first failed attempt instead of
+    # burning the full MAX_OPTIMIZATION_ATTEMPTS.
+    optimizer_steps = [s for s in result["steps"] if s["agent"] == "optimizer"]
+    assert len(optimizer_steps) < orchestrator.MAX_OPTIMIZATION_ATTEMPTS
+
+
+def test_pipeline_budget_skips_sweep_when_time_is_spent(monkeypatch):
+    class _FastClient:
+        def call(self, role_prompt, content, on_status=None):
+            if "refactoring" in role_prompt.lower():
+                return "```python\nSCALE = 5\nprint('A')\n```"
+            if "performance engineering" in role_prompt.lower():
+                return "Fake analyst report."
+            return "```python\nprint('A')\n```"
+    monkeypatch.setattr(orchestrator, "PIPELINE_BUDGET_SECONDS", 0)
+    result = orchestrator.execute_pipeline("print('A')", client=_FastClient())
+    assert result["verified"] is True          # a verified result is still returned
+    assert result["scale_sweep"] == []
+    assert result["scale_sweep_skipped"] is True
+    assert result["budget_exhausted"] is True
