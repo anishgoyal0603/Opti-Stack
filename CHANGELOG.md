@@ -3,6 +3,33 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.1] — 2026-08-05
+
+### Security
+- **Capped total wall-clock for a whole pipeline run (30 s).** The per-benchmark
+  sampling budget added in 1.2.0 bounds a single call, not a run that makes up
+  to six of them. A submission tuned to sit just under the 2,000 ms sweep-skip
+  threshold — a ~1.9 s sleep — passes every per-call limit and measured ~61 s
+  of worker time per click. The Coordinator now stops retrying and truncates
+  the scale sweep once the budget is spent, measured at ~40 s for the same
+  payload. The budget is checked *between sweep scales*, not only before the
+  sweep, because at the pre-sweep point the sweep has not spent anything yet
+  and the check was a no-op. Runs that hit the budget are flagged with
+  `budget_exhausted` and still return whatever was verified.
+
+### Fixed
+- `scan_code()` raised an unhandled `TypeError` on non-string input (`None`,
+  `int`, `list`) instead of returning a rejection. Not reachable from the UI or
+  CLI, both of which pass a `str`, but a security scanner is the wrong place to
+  have an unhandled exception path. Now a clean `ScanResult(safe=False)`.
+
+### Changed
+- README corrected: unicode homoglyph payloads were listed as out of scope, but
+  measurement shows CPython NFKC-normalises identifiers at parse time, so a
+  homoglyph spelling of `__class__` reaches the scanner already normalised and
+  is caught by the dunder rule. The limitation list now says so rather than
+  understating the defense.
+
 ## [1.2.0] — 2026-08-04
 
 ### Security

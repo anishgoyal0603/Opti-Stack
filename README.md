@@ -235,8 +235,11 @@ pytest tests/ -v
   `__builtins__`; and dunder traversal smuggled through a `str.format`
   template. It is verified against a regression suite of known bypass
   payloads. It does not defeat a determined adversary — obfuscated bytecode
-  tricks, unicode homoglyph attacks, and format templates assembled at
-  runtime from concatenated fragments are out of scope. (That last gap is
+  tricks and format templates assembled at runtime from concatenated fragments
+  are out of scope. (Unicode homoglyph payloads are covered incidentally:
+  CPython NFKC-normalises identifiers at parse time, so a homoglyph spelling
+  of `__class__` arrives at the scanner already normalised and is caught by
+  the dunder rule.) (That last gap is
   accepted knowingly: format-template traversal can *read* attributes but
   cannot call them, so it is information disclosure rather than code
   execution, and the child runs each script in a fresh namespace holding no
@@ -255,6 +258,12 @@ pytest tests/ -v
   oversized paste of entirely benign statements could exhaust the instance in
   a single request. This cap is the control that actually protects the
   process, because no rate limit can stop a one-request kill.
+- **A whole pipeline run is capped at 30 seconds of wall-clock.** Per-call
+  limits bound one benchmark, not a run that makes up to six of them. A
+  submission tuned to sit just under the sweep threshold (a ~1.9 s sleep)
+  passes every per-call limit and measured ~61 s of worker time per click;
+  the pipeline budget brings that to ~40 s by stopping retries and truncating
+  the sweep. It reduces the ceiling, it does not remove it.
 - **Rate limiting is per-session and is not a real control.** The UI limits
   5 runs per 60 s using `st.session_state`, which an incognito window or a
   scripted client resets for free. It stops casual button-mashing and nothing
