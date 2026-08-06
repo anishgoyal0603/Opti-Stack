@@ -129,7 +129,16 @@ def scan_code(source: str) -> ScanResult:
     for the constructs documented in this module's docstring. The size check
     runs first, because ast.parse() itself is the resource risk for oversized
     input and it executes in the caller's (shared) process."""
-    if source is not None and len(source) > MAX_SOURCE_CHARS:
+    if not isinstance(source, str):
+        # Defensive: every real caller passes a str, but ast.parse() raises a
+        # bare TypeError on None/int/list and that would escape into the
+        # pipeline as an unhandled crash rather than a clean rejection.
+        return ScanResult(
+            safe=False,
+            violations=[f"Source must be a string, got {type(source).__name__}."],
+        )
+
+    if len(source) > MAX_SOURCE_CHARS:
         return ScanResult(
             safe=False,
             violations=[

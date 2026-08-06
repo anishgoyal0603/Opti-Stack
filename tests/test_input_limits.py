@@ -37,3 +37,14 @@ def test_pipeline_rejects_oversized_input_at_the_entry_point():
     assert result["rejected_at_input"] is True
     assert result["verified"] is False
     assert any("too large" in v.lower() for v in result["security_violations"])
+
+
+def test_non_string_input_is_a_clean_rejection_not_a_crash():
+    """ast.parse() raises a bare TypeError on None/int/list, which would
+    escape into the pipeline as an unhandled crash. Every real caller passes
+    a str, so this is defensive -- but a scanner is the wrong place to have
+    an unhandled exception path."""
+    for bad in (None, 42, ["print(1)"], {"a": 1}):
+        r = scan_code(bad)
+        assert r.safe is False, f"{type(bad).__name__} was not rejected"
+        assert "must be a string" in r.violations[0]
