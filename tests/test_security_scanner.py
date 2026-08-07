@@ -58,6 +58,26 @@ BYPASS_PAYLOADS = {
     "dunder_code": "def f(): pass\nprint(f.__code__)",
     "dunder_reduce": "print(().__reduce__)",
     "dunder_getattribute": "print(''.__getattribute__)",
+    # non-dunder introspection escapes: frame/code internals reached through
+    # ordinary attribute names, and object.__subclasses__() via type().mro().
+    # Confirmed at runtime to reach __builtins__.__import__ / Popen.
+    "gen_frame_globals": "def g():\n    yield 1\ngen = g()\nprint(gen.gi_frame.f_globals)",
+    "gen_code_consts": "def g():\n    yield 1\nprint(g().gi_code.co_consts)",
+    "coro_frame": "async def c():\n    pass\nprint(c().cr_frame.f_globals)",
+    "asyncgen_frame": "async def a():\n    yield 1\nprint(a().ag_frame.f_globals)",
+    "type_mro_subclasses": "print(type(()).mro()[-1].__subclasses__())",
+    "traceback_frame": "try:\n    1/0\nexcept Exception as e:\n    print(e.__traceback__.tb_frame.f_globals)",
+    # operator.attrgetter/methodcaller fetch attributes BY STRING, bypassing
+    # the .attr denylist entirely; confirmed reaching __import__ at runtime.
+    # types.FunctionType/CodeType construct executable objects from parts.
+    "operator_attrgetter": "import operator\ng = operator.attrgetter(\"gi_frame\")",
+    "operator_attrgetter_chain": "import operator\ndef g():\n    yield 1\nfr = operator.attrgetter(\"gi_frame\")(g())\noperator.attrgetter(\"f_globals\")(fr)",
+    "operator_methodcaller": "import operator\noperator.methodcaller(\"mro\")(type(()))",
+    "from_operator_import": "from operator import attrgetter",
+    "types_functiontype": "import types\nprint(types.FunctionType)",
+    "from_types_codetype": "from types import CodeType",
+    "dataclasses_functiontype_reexport": "import dataclasses\nprint(dataclasses.FunctionType)",
+    "operator_itemgetter": "import operator\noperator.itemgetter(0)",
 }
 
 LEGITIMATE_OPTIMIZATIONS = {
@@ -72,6 +92,14 @@ LEGITIMATE_OPTIMIZATIONS = {
     "context_manager": "class C:\n    def __enter__(self):\n        return self\n    def __exit__(self, *a):\n        return False\nwith C():\n    print(1)",
     "plain_format_call": 'print("{} and {}".format(1, 2))',
     "fstring_normal": "n = 5\nprint(f'value is {n}')",
+    "generator_use": "def g():\n    yield 1\n    yield 2\nprint(list(g()))",
+    "async_def_plain": "async def fetch():\n    return 42",
+    "try_except_plain": "try:\n    x = 1 / 1\nexcept Exception as e:\n    print(e)",
+    "var_named_mro": "mro = [1, 2, 3]\nprint(sum(mro))",
+    "co_prefixed_names": "company = 5\ncontext = company * 2\nprint(context)",
+    "functools_lru_cache": "import functools\n@functools.lru_cache\ndef f(n):\n    return n\nprint(f(1))",
+    "itertools_chain": "import itertools\nprint(list(itertools.chain([1], [2])))",
+    "collections_defaultdict": "from collections import defaultdict\nd = defaultdict(int)\nprint(len(d))",
 }
 
 @pytest.mark.parametrize("name,source", sorted(BYPASS_PAYLOADS.items()))

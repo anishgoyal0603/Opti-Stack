@@ -77,6 +77,16 @@ DENYLISTED_IMPORTS = {
     # dynamic import / introspection escapes
     "importlib", "builtins", "__builtin__", "imp", "inspect", "gc", "ast",
     "webbrowser", "platform", "site", "sysconfig",
+    # string-based attribute access and code-object construction. `operator`
+    # is the important one: operator.attrgetter("gi_frame") / methodcaller
+    # fetch an attribute BY STRING, which bypasses the entire .attr denylist
+    # (the AST never contains the attribute name). Confirmed at runtime to
+    # reach __builtins__.__import__("os") through a generator frame. `types`
+    # (FunctionType/CodeType) constructs executable objects from parts.
+    # functools/itertools/collections are deliberately NOT here -- they are
+    # common in real optimization code and offer no string-attr or code
+    # construction primitive on their own.
+    "operator", "types", "copyreg",
 }
 
 DENYLISTED_CALLS = {
@@ -107,6 +117,47 @@ SAFE_DUNDERS = {
     "__radd__", "__rsub__", "__rmul__",
     "__bool__", "__int__", "__float__", "__index__",
     "__call__", "__copy__", "__deepcopy__",
+}
+
+# Non-dunder attribute and method names that reach frame/code/type internals.
+# The dunder rule cannot see these because they are ordinary names -- yet each
+# is a documented path back to f_globals -> __builtins__ -> __import__, or to
+# object.__subclasses__() via type().mro(). Confirmed reachable at runtime:
+#   (g := (lambda: (yield)))().gi_frame.f_globals['__builtins__'].__import__('os')
+#   type(()).mro()[-1].__subclasses__()
+# None of these appear in ordinary optimization code.
+DENYLISTED_INTROSPECTION_ATTRS = {
+    # generator / coroutine / async-generator internals
+    "gi_frame", "gi_code", "gi_yieldfrom",
+    "cr_frame", "cr_code", "cr_await",
+    "ag_frame", "ag_code", "ag_await",
+    # frame object
+    "f_globals", "f_builtins", "f_locals", "f_back", "f_code", "f_trace",
+    "f_lasti", "f_lineno",
+    # code object
+    "co_consts", "co_names", "co_code", "co_varnames", "co_freevars",
+    "co_cellvars", "co_globals",
+    # traceback (e.__traceback__ is a blocked dunder, but tb_* are not)
+    "tb_frame", "tb_next",
+    # legacy py2-style function attributes, blocked defensively
+    "func_globals", "func_code", "func_dict", "func_closure",
+}
+
+# Non-dunder methods that leak the type graph when *called*.
+DENYLISTED_INTROSPECTION_METHODS = {
+    # type(x).mro() returns the MRO list, whose last element is object, whose
+    # __subclasses__() walks to Popen -- the classic escape without a dunder.
+    "mro",
+    # __init_subclass__ / __set_name__ etc. are dunders and already blocked;
+    # this set is for the non-dunder callable leaks only.
+    #
+    # Executable-object constructors and string-based attribute getters,
+    # blocked by attribute NAME so that a re-export through an otherwise-safe
+    # module (e.g. dataclasses.FunctionType, which really is types.FunctionType)
+    # does not become a bypass. Blocking the import of `operator`/`types` above
+    # handles the direct route; this handles the re-export route.
+    "FunctionType", "CodeType", "FrameType", "TracebackType",
+    "attrgetter", "methodcaller", "itemgetter",
 }
 
 # Matches a str.format replacement field that performs attribute access on a
@@ -184,6 +235,16 @@ def scan_code(source: str) -> ScanResult:
             if _is_dunder(node.attr) and node.attr not in SAFE_DUNDERS:
                 violations.append(
                     f"Disallowed dunder attribute access: '.{node.attr}' (line {node.lineno})"
+                )
+            elif node.attr in DENYLISTED_INTROSPECTION_ATTRS:
+                violations.append(
+                    f"Disallowed introspection attribute: '.{node.attr}' "
+                    f"(reaches frame/code internals) (line {node.lineno})"
+                )
+            elif node.attr in DENYLISTED_INTROSPECTION_METHODS:
+                violations.append(
+                    f"Disallowed introspection method: '.{node.attr}(...)' "
+                    f"(leaks the type graph) (line {node.lineno})"
                 )
             else:
                 root = _resolve_attribute_root(node)
