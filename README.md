@@ -231,7 +231,14 @@ pytest tests/ -v
   blocks process, filesystem, network and dynamic-import escapes by name;
   dunder attribute access outside a small allowlist of protocol methods
   (which is what closes the no-import object-graph escapes such as
-  `().__class__.__bases__[0].__subclasses__()`); references to
+  `().__class__.__bases__[0].__subclasses__()`); non-dunder introspection
+  attributes and methods that reach the same internals by another route
+  (`gi_frame`/`f_globals`/`co_consts` on generators and frames,
+  `type(x).mro()` to `object.__subclasses__()`); the `operator` and `types`
+  modules, whose `attrgetter`/`methodcaller` fetch attributes by string
+  (bypassing the attribute rules) and whose `FunctionType`/`CodeType`
+  construct executable objects — blocked both as imports and as attribute
+  names, so a re-export through a safe module is caught too; references to
   `__builtins__`; and dunder traversal smuggled through a `str.format`
   template. It is verified against a regression suite of known bypass
   payloads. It does not defeat a determined adversary — obfuscated bytecode

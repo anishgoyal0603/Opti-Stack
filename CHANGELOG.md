@@ -3,6 +3,47 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.3] — 2026-08-07
+
+### Security
+- **Closed a string-based attribute escape via the `operator` module
+  (code-execution class).** The 1.2.2 fix denylists dangerous attribute names
+  like `gi_frame`, but `operator.attrgetter("gi_frame")` and
+  `operator.methodcaller("mro")` fetch attributes *by string* — the name never
+  appears as an AST attribute node, so the denylist could not see it.
+  Confirmed at runtime: `operator.attrgetter("f_globals")(operator.attrgetter("gi_frame")(g()))`
+  reached `__builtins__.__import__("os")` with no blocked token in the source.
+  `operator`, `types` (its `FunctionType`/`CodeType` construct executable
+  objects) and `copyreg` are now denylisted imports. `functools`, `itertools`
+  and `collections` are deliberately kept allowed — they are common in real
+  optimization code and expose no such primitive.
+- **Blocked executable-object constructors by attribute name too.**
+  `dataclasses.FunctionType` is a genuine re-export of `types.FunctionType`,
+  so blocking the `types` import alone left a re-export route. `FunctionType`,
+  `CodeType`, `FrameType`, `TracebackType`, `attrgetter`, `methodcaller` and
+  `itemgetter` are now rejected as attribute access regardless of which module
+  exposes them. A variable, parameter, dict key or method *definition* of the
+  same name is unaffected; only attribute access is blocked.
+
+## [1.2.2] — 2026-08-06
+
+### Security
+- **Closed a non-dunder object-graph escape (code-execution class).** The
+  dunder rule blocks `().__class__...`, but Python exposes the same internals
+  through ordinary, non-dunder attribute names that the rule cannot see. Two
+  confirmed-reachable paths: `g().gi_frame.f_globals['__builtins__'].__import__('os')`
+  (via any generator/coroutine/async-generator's frame or code object), and
+  `type(()).mro()[-1].__subclasses__()` (via the non-dunder `mro()` method to
+  the object subclass list). Both reached `os`/`Popen` at runtime with no
+  blocked token in the source. The scanner now denylists the frame/code/
+  traceback introspection attributes (`gi_frame`, `cr_frame`, `ag_frame`,
+  `f_globals`, `f_builtins`, `f_back`, `f_code`, `co_consts`, `co_names`,
+  `tb_frame`, and related) and the non-dunder `mro` method, as attribute
+  access only — a variable, parameter or dict key of the same name is
+  unaffected. Verified against runtime exploit reproductions and the existing
+  false-positive suite (generators, `async def`, `try/except`, and `co_`/`mro`
+  named identifiers all still pass).
+
 ## [1.2.1] — 2026-08-05
 
 ### Security
