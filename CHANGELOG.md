@@ -3,6 +3,23 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.4] — 2026-08-08
+
+### Security
+- **Blocked dangerous builtins used as bare values, not only as direct calls.**
+  The scanner rejected `eval(...)` but not `f = eval; f(x)`, `map(eval, xs)`, or
+  `functools.reduce(getattr, ["gi_frame"], g)` — the builtin passed as a value
+  rather than called at the point the scanner inspected. Confirmed at runtime:
+  `functools.reduce(getattr, ["gi_frame", "f_globals"], g())` reached
+  `__builtins__.__import__("os")`. Every name in the call denylist
+  (`eval`, `exec`, `compile`, `__import__`, `open`, `getattr`, `setattr`,
+  `globals`, `locals`, `vars`, ...) is now also rejected as a bare reference,
+  while still being reported exactly once for the ordinary direct-call form.
+- **Denylisted the `string` module.** `string.Formatter().get_field("0.gi_frame", ...)`
+  performs string-based attribute traversal, the same escape class as
+  `operator.attrgetter`; it reached `os` at runtime. Plain string literals and
+  `str` methods are unaffected — only `import string` is blocked.
+
 ## [1.2.3] — 2026-08-07
 
 ### Security

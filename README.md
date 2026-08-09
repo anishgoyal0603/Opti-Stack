@@ -238,7 +238,10 @@ pytest tests/ -v
   modules, whose `attrgetter`/`methodcaller` fetch attributes by string
   (bypassing the attribute rules) and whose `FunctionType`/`CodeType`
   construct executable objects — blocked both as imports and as attribute
-  names, so a re-export through a safe module is caught too; references to
+  names, so a re-export through a safe module is caught too; the `string`
+  module (`Formatter().get_field` traverses attributes by string); dangerous
+  builtins (`eval`, `exec`, `open`, `getattr`, `__import__`) whether called
+  directly *or* passed as bare values such as `map(eval, xs)`; references to
   `__builtins__`; and dunder traversal smuggled through a `str.format`
   template. It is verified against a regression suite of known bypass
   payloads. It does not defeat a determined adversary — obfuscated bytecode
