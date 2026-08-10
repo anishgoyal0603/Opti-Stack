@@ -86,13 +86,15 @@ DENYLISTED_IMPORTS = {
     # functools/itertools/collections are deliberately NOT here -- they are
     # common in real optimization code and offer no string-attr or code
     # construction primitive on their own.
-    "operator", "types", "copyreg",
+    "operator", "types", "copyreg", "string",
+    "codecs", "pydoc", "linecache", "traceback",
 }
 
 DENYLISTED_CALLS = {
     "eval", "exec", "compile", "__import__", "open", "input",
     "breakpoint", "getattr", "setattr", "delattr",
     "globals", "locals", "vars", "memoryview",
+    "help",
 }
 
 # Bare names that must never be referenced at all, even without a call.
@@ -171,6 +173,14 @@ class ScanResult:
     violations: List[str] = field(default_factory=list)
 
 
+def _is_call_target(name_node, call_func_ids) -> bool:
+    """True if this Name node is the function being called in a Call (e.g. the
+    `eval` in `eval(x)`), so the Call branch will report it and the Name branch
+    should not double-count. A bare value use (`map(eval, xs)`) is not a call
+    target and must be reported by the Name branch."""
+    return id(name_node) in call_func_ids
+
+
 def _is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
@@ -201,6 +211,8 @@ def scan_code(source: str) -> ScanResult:
 
     violations = []
 
+    call_func_ids = set()
+
     try:
         tree = ast.parse(source)
     except SyntaxError as e:
@@ -210,6 +222,10 @@ def scan_code(source: str) -> ScanResult:
         # memory even under the size cap; treat that as a rejection rather
         # than letting the exception escape into the pipeline.
         return ScanResult(safe=False, violations=[f"Code could not be parsed safely: {e}"])
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            call_func_ids.add(id(node.func))
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -227,6 +243,16 @@ def scan_code(source: str) -> ScanResult:
         elif isinstance(node, ast.Name):
             if node.id in DENYLISTED_NAMES:
                 violations.append(f"Disallowed reference to '{node.id}' (line {node.lineno})")
+            elif node.id in DENYLISTED_CALLS and not _is_call_target(node, call_func_ids):
+                # A dangerous builtin used as a bare *value* -- map(eval, xs),
+                # functools.reduce(getattr, ...), f = open; f(path) -- is just
+                # as exploitable as calling it directly. The ast.Call branch
+                # only catches the direct-call form, so catch the value form
+                # here. (Direct calls are still reported by the Call branch;
+                # call_func_ids lets us avoid double-counting those.)
+                violations.append(
+                    f"Disallowed reference to builtin '{node.id}' used as a value (line {node.lineno})"
+                )
 
         elif isinstance(node, ast.Attribute):
             # Dunder attribute access outside the safe allowlist: this is how

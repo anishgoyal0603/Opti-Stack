@@ -78,6 +78,26 @@ BYPASS_PAYLOADS = {
     "from_types_codetype": "from types import CodeType",
     "dataclasses_functiontype_reexport": "import dataclasses\nprint(dataclasses.FunctionType)",
     "operator_itemgetter": "import operator\noperator.itemgetter(0)",
+    # dangerous builtins used as bare VALUES (not direct calls): map(eval,...),
+    # functools.reduce(getattr,...), f = eval; f(x). Confirmed reaching os.
+    "bare_eval_value": "f = eval\nprint(f(\"1\"))",
+    "map_eval": "r = list(map(eval, [\"1+1\"]))",
+    "reduce_getattr": "import functools\nfunctools.reduce(getattr, [\"gi_frame\"], g)",
+    "bare_open_value": "f = open",
+    "bare_import_value": "i = __import__",
+    "exec_in_list": "x = [exec][0]",
+    # string.Formatter().get_field does string-based attribute traversal.
+    "string_formatter_getfield": "import string\nstring.Formatter().get_field(\"0.gi_frame\", [g], {})",
+    "from_string_import_formatter": "from string import Formatter",
+    # codecs.open is a file-open primitive that bypasses the blocked open()
+    # builtin; confirmed reading /etc/hostname at runtime. help/pydoc import
+    # arbitrary modules. linecache/traceback read files and expose frames.
+    "codecs_open_read": "import codecs\nprint(codecs.open(\"/etc/passwd\").read())",
+    "from_codecs_import_open": "from codecs import open as o",
+    "help_call": "help(\"os\")",
+    "help_bare_value": "h = help",
+    "linecache_read": "import linecache\nprint(linecache.getline(\"/etc/passwd\", 1))",
+    "traceback_extract": "import traceback\nprint(traceback.extract_stack())",
 }
 
 LEGITIMATE_OPTIMIZATIONS = {
@@ -100,6 +120,12 @@ LEGITIMATE_OPTIMIZATIONS = {
     "functools_lru_cache": "import functools\n@functools.lru_cache\ndef f(n):\n    return n\nprint(f(1))",
     "itertools_chain": "import itertools\nprint(list(itertools.chain([1], [2])))",
     "collections_defaultdict": "from collections import defaultdict\nd = defaultdict(int)\nprint(len(d))",
+    "map_with_lambda": "print(list(map(lambda x: x * 2, range(5))))",
+    "map_with_str": "print(list(map(str, [1, 2, 3])))",
+    "reduce_with_lambda": "import functools\nprint(functools.reduce(lambda a, b: a + b, [1, 2, 3]))",
+    "sorted_with_key": "print(sorted([3, 1, 2], key=lambda x: -x))",
+    "str_encode_method": "s = \"x\".encode(\"utf-8\")\nprint(len(s))",
+    "bytes_decode_method": "print(b\"hi\".decode())",
 }
 
 @pytest.mark.parametrize("name,source", sorted(BYPASS_PAYLOADS.items()))
