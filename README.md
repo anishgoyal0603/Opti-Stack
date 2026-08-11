@@ -240,8 +240,10 @@ pytest tests/ -v
   construct executable objects — blocked both as imports and as attribute
   names, so a re-export through a safe module is caught too; the `string`
   module (`Formatter().get_field` traverses attributes by string); dangerous
-  builtins (`eval`, `exec`, `open`, `getattr`, `__import__`) whether called
-  directly *or* passed as bare values such as `map(eval, xs)`; references to
+  builtins (`eval`, `exec`, `open`, `getattr`, `__import__`, `help`) whether
+  called directly *or* passed as bare values such as `map(eval, xs)`; the
+  `codecs`/`linecache`/`traceback`/`pydoc` modules (file-read and
+  frame-introspection primitives that bypass the `open` block); references to
   `__builtins__`; and dunder traversal smuggled through a `str.format`
   template. It is verified against a regression suite of known bypass
   payloads. It does not defeat a determined adversary — obfuscated bytecode

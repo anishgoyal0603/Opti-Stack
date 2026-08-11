@@ -3,6 +3,29 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.5] — 2026-08-09
+
+### Security
+- **Blocked `codecs`, which re-opens the file-read primitive.** `codecs.open()`
+  opens files independently of the blocked `open` builtin; confirmed reading
+  `/etc/hostname` at runtime. `codecs`, `linecache` and `traceback` (both of
+  which also read files / expose frames) and `pydoc` are now denylisted
+  imports. `str.encode` / `bytes.decode` methods are unaffected — only
+  `import codecs` is blocked.
+- **Blocked the `help` builtin.** `help("os")` drives `pydoc`, which imports
+  arbitrary modules to document them. Lower severity than the file/exec escapes
+  (it prints to stdout and returns no callable) but never needed in
+  optimization code, so it is rejected as both a direct call and a bare value.
+
+### Note
+This is the fourth consecutive release to close a distinct sandbox-escape
+family in the AST denylist (frame attrs, `operator`/`types`, bare-value
+builtins + `string`, now `codecs`/`help`). The recurrence is inherent to
+denylisting Python's reflection surface in front of `exec()`: it is not a
+sign of convergence. See the README's "Known limitations" — the recommended
+resolution is a container/gVisor boundary or a fixed example-only public demo,
+not further denylist patching.
+
 ## [1.2.4] — 2026-08-08
 
 ### Security
