@@ -3,6 +3,37 @@
 All notable changes to this project are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.3.0] — 2026-08-10
+
+### Security
+- **Removed the free-text code-execution surface from the public deployment.**
+  Across eight review rounds the AST scanner was patched for eight distinct
+  escape families (frame introspection, `operator.attrgetter`, bare-value
+  builtins, `codecs`, ...). That pattern demonstrates a denylist in front of
+  `exec()` cannot be made exhaustive against an adversarial, arbitrary
+  stranger -- it is not a sign the scanner was close to done. Rather than a
+  ninth patch, the public deployment now offers only a curated set of five
+  vetted example scripts (`opti_stack/examples.py`), each checked into the
+  repo and verified against the scanner and a real execution in CI. There is
+  no adversarial input for the scanner to fail against, because there is no
+  free-text input at all.
+- Full arbitrary-code mode remains available for local/cloned use via
+  `OPTISTACK_ALLOW_ARBITRARY_CODE=1`, an explicit opt-in that defaults OFF —
+  a fresh deploy, a forgotten env var, or an unset variable all land in the
+  safe examples-only mode, never the open one. Verified with a real
+  Streamlit `AppTest` render (not just the underlying boolean) proving the
+  default, unset, and garbage-value cases all show zero `text_area` widgets.
+
+### Added
+- `opti_stack/examples.py`: five vetted example scripts covering the
+  pair-sum, duplicate-finder, naive-Fibonacci, string-concatenation, and
+  repeated-membership-check optimization patterns.
+- `tests/test_examples.py`: every example is scanner-clean and actually
+  executes successfully — the load-bearing guarantee behind examples-only
+  mode.
+- `tests/test_app_gating.py`: real Streamlit `AppTest` coverage of the mode
+  gate itself.
+
 ## [1.2.5] — 2026-08-09
 
 ### Security
