@@ -77,12 +77,24 @@ print(f"Duplicates found: {len(find_duplicates(data))}")""",
             "A strong demo of the scale-sweep chart, since the original "
             "explodes fast."
         ),
+        # n=20 (21,891 recursive calls), not n=24 (150,049 calls). The
+        # deployed public app runs on Streamlit Community Cloud's shared free
+        # tier, measured at roughly 35-40x slower wall-clock than a typical
+        # dev machine for this workload -- fib(24) took ~55ms locally but
+        # ~2006ms on the live host, landing right on top of the
+        # orchestrator's 2000ms SWEEP_MAX_ORIGINAL_MS threshold and silently
+        # skipping the scale-sweep chart (the pipeline's best visual) on an
+        # otherwise-successful run. fib(20) has ~15% of fib(24)'s call count,
+        # projecting to roughly 300ms on the same host: a wide, deliberate
+        # safety margin under the threshold rather than a coin flip against
+        # it, while the exponential blowup is still dramatic enough to be a
+        # good demo on its own.
         code="""def fib(n):
     if n <= 1:
         return n
     return fib(n - 1) + fib(n - 2)
 
-print(f"fib(24) = {fib(24)}")""",
+print(f"fib(20) = {fib(20)}")""",
     ),
     Example(
         key="string_concat",
